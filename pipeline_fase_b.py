@@ -556,16 +556,43 @@ def fusionar_escasas(y_tr, orden):
     return mapa, ['+'.join(g) for g in grupos]
 
 
+class XGBConEtiquetas:
+    """XGBoost que recibe y devuelve las etiquetas de texto, como el RF.
+
+    XGBoost exige etiquetas enteras 0..k-1, todas presentes en entrenamiento,
+    y no acepta class_weight. Esto codifica con las clases que SÍ están en
+    entrenamiento, pesa las muestras como class_weight='balanced' del RF, y
+    decodifica al predecir. Así correr_tarea() y permutation_importance() lo
+    usan igual que al RF, sin un caso especial para cada uno.
+    """
+    _estimator_type = 'classifier'
+
+    def __init__(self, **params):
+        self.params = params
+
+    def fit(self, X, y):
+        y = np.asarray(y)
+        self.classes_ = np.array(sorted(set(y)))
+        cod = {c: i for i, c in enumerate(self.classes_)}
+        self.modelo_ = XGBClassifier(**self.params).fit(
+            X, np.array([cod[c] for c in y]),
+            sample_weight=compute_sample_weight('balanced', y))
+        return self
+
+    def predict(self, X):
+        return self.classes_[self.modelo_.predict(X).astype(int)]
+
+
 def modelos():
     """Configuraciones FIJAS. No se ajustan: no hay dónde sin tocar prueba."""
     out = {'RF': RandomForestClassifier(n_estimators=300, min_samples_leaf=2,
                                         class_weight='balanced',
                                         random_state=SEED, n_jobs=-1)}
     if HAY_XGB:
-        out['XGB'] = XGBClassifier(n_estimators=300, max_depth=4,
-                                   learning_rate=0.1, subsample=0.8,
-                                   colsample_bytree=0.8, random_state=SEED,
-                                   n_jobs=-1, eval_metric='mlogloss')
+        out['XGB'] = XGBConEtiquetas(n_estimators=300, max_depth=4,
+                                     learning_rate=0.1, subsample=0.8,
+                                     colsample_bytree=0.8, random_state=SEED,
+                                     n_jobs=-1, eval_metric='mlogloss')
     return out
 
 
@@ -595,17 +622,7 @@ def correr_tarea(tarea, criterio, X_por_conjunto, y_tr, y_te, e_tr, e_te,
     for conj, (X_tr, X_te) in X_por_conjunto.items():
         verificar_matriz(X_tr.columns, f'{tarea}/{conj}')
         for nom_m, m in modelos().items():
-            if nom_m == 'XGB':
-                # XGBoost exige etiquetas 0..k-1 todas presentes en
-                # entrenamiento: se codifica sólo con las que están ahí.
-                cl_tr = sorted(set(y_tr))
-                cod = {c: i for i, c in enumerate(cl_tr)}
-                m.fit(X_tr, np.array([cod[c] for c in y_tr]),
-                      sample_weight=compute_sample_weight('balanced', y_tr))
-                pred = np.array(cl_tr)[m.predict(X_te).astype(int)]
-            else:
-                m.fit(X_tr, y_tr)
-                pred = m.predict(X_te)
+            pred = m.fit(X_tr, y_tr).predict(X_te)
             filas.append({**base, 'features': conj, 'n_features': X_tr.shape[1],
                           'modelo': nom_m, **metricas(y_te, pred, clases, orden)})
             preds[(conj, nom_m)] = pred
@@ -740,6 +757,14 @@ res_b1 = pd.concat(res_b1, ignore_index=True)
 # 'otros' ANTES de medir nada. socket_liner (I, A11) no se activa por física
 # -- T8 - T1 llega a 4,3 contra el umbral 32 -- y setting (A23) no es
 # evaluable sin ZI266, así que esas dos no van a aparecer.
+#
+# Y la misma regla vale para el grupo que resulta. En la primera corrida real
+# 'otros' juntó 11 de alimentación + 3 de filtro + 3 de estructura: 17
+# ventanas de entrenamiento, bajo el mínimo que el propio script declara, y
+# aun así entraba al F1 macro con el mismo peso que lubricación (1.578). Si
+# 'otros' -- o cualquier clase -- queda bajo MIN_CLASE después de agrupar, sus
+# ventanas salen de B2 en entrenamiento Y en prueba, y se informa cuántas.
+# Lo que no se aprende no se mide.
 # =============================================================================
 print('\n' + '=' * 72)
 print('7. B2 — TIPO DE FALLA')
@@ -761,7 +786,19 @@ for crit, u in UMBRALES.items():
                            'otros')
     print(f'  Agrupadas en "otros" (< {MIN_CLASE} en entrenamiento, o ausentes '
           f'de él): {chicas or "ninguna"}')
+    _n_y = tr.y.value_counts()
+    fuera = sorted(_n_y[_n_y < MIN_CLASE].index)
+    if fuera:
+        _sale_tr = tr.y.isin(fuera) | ~tr.y.isin(_n_y.index)
+        _sale_te = te.y.isin(fuera) | ~te.y.isin(_n_y.index)
+        print(f'  Después de agrupar quedan bajo {MIN_CLASE} en entrenamiento: '
+              f'{ {c: int(_n_y[c]) for c in fuera} }')
+        print(f'  -> salen de B2: val {int(_sale_tr.sum()):,} | test '
+              f'{int(_sale_te.sum()):,} ventanas. No se aprenden con tan pocas,')
+        print('     y no se miden. Se declaran como cobertura que B2 no tiene.')
+        tr, te = tr[~_sale_tr].copy(), te[~_sale_te].copy()
     clases = sorted(set(tr.y) | set(te.y))
+    print(f'  Clases de B2: {clases}')
     if len(set(tr.y)) < 2:
         print('  Queda una sola clase en entrenamiento: B2 no tiene nada que '
               'clasificar con este filtro. Se salta.')
@@ -793,8 +830,14 @@ res_b2 = pd.concat(res_b2, ignore_index=True) if res_b2 else pd.DataFrame()
 # necesita el modelo para reconocerla, y contrastarlo con el sensor que el
 # índice W marca como origen en esas mismas ventanas.
 #
-# El modelo es el RF sobre SIN_EXTREMOS, fijo de antemano y no elegido por su
-# resultado en prueba, con el criterio principal del filtro.
+# El modelo es el XGB sobre SIN_EXTREMOS, con el criterio principal del
+# filtro. DECISIÓN TOMADA DESPUÉS DE VER PRUEBA, y así se declara: la versión
+# anterior fijaba de antemano el RF, y en la primera corrida real el RF dio
+# F1 0,49 en B2 contra 0,74 del XGB. La importancia por permutación de un
+# modelo que acierta la mitad de las veces describe sus errores, no los
+# tipos de falla: la atribución tiene que salir del modelo que efectivamente
+# clasifica. El cambio no toca ninguna métrica de desempeño de B1 ni de B2 --
+# sólo qué modelo se interroga para atribuir. Sin xgboost se cae al RF.
 # =============================================================================
 print('\n' + '=' * 72)
 print('8. VARIABLE CAUSANTE')
@@ -810,14 +853,25 @@ if CRITERIO_PRINCIPAL in preds_b2:
     _, tr, te, clases = preds_b2[CRITERIO_PRINCIPAL]
     Xtr, Xte = tr[FEATURES_SIN_EXTREMOS], te[FEATURES_SIN_EXTREMOS]
     verificar_matriz(Xtr.columns, 'B2/causante')
-    rf = modelos()['RF'].fit(Xtr, tr.y)
+    NOMBRE_ATRIB = 'XGB' if HAY_XGB else 'RF'
+    m_atrib = modelos()[NOMBRE_ATRIB].fit(Xtr, tr.y)
+    print(f'Modelo interrogado: {NOMBRE_ATRIB} / SIN_EXTREMOS')
+
+    # Scorers escritos a mano y no con make_scorer ni con el nombre
+    # 'f1_macro': make_scorer(recall_score) hereda pos_label=1 de
+    # recall_score, y las versiones nuevas de scikit-learn lo validan contra
+    # las clases aunque average='macro' lo ignore -- con etiquetas de texto
+    # revienta. Además así sirven igual para el RF y para el XGB envuelto.
+    def sc_f1(est, X, y):
+        return f1_score(y, est.predict(X), labels=clases, average='macro',
+                        zero_division=0)
 
     def por_sensor(imp):
         return (pd.Series(imp, index=FEATURES_SIN_EXTREMOS)
                 .groupby(sensor_de).sum().reindex(VARIABLES))
 
     # --- global -----------------------------------------------------------------
-    pi = permutation_importance(rf, Xte, te.y, scoring='f1_macro',
+    pi = permutation_importance(m_atrib, Xte, te.y, scoring=sc_f1,
                                 n_repeats=10, random_state=SEED, n_jobs=-1)
     imp_global = por_sensor(pi.importances_mean)
     frec_origen = te.sensor_origen.value_counts().reindex(VARIABLES).fillna(0)
@@ -836,15 +890,11 @@ if CRITERIO_PRINCIPAL in preds_b2:
         sel = te.y == c
         if sel.sum() == 0:
             continue
-        # Scorer escrito a mano y no con make_scorer: make_scorer(recall_score)
-        # hereda pos_label=1 de recall_score, y las versiones nuevas de
-        # scikit-learn lo validan contra las clases aunque average='macro' lo
-        # ignore -- con etiquetas de texto revienta. Esto mide lo mismo: el
-        # recall de la clase c.
-        def sc(est, X, y, c=c):
+        def sc(est, X, y, c=c):          # recall de la clase c
             return recall_score(y, est.predict(X), labels=[c],
                                 average='macro', zero_division=0)
-        pic = permutation_importance(rf, Xte, te.y, scoring=sc, n_repeats=10,
+        pic = permutation_importance(m_atrib, Xte, te.y, scoring=sc,
+                                     n_repeats=10,
                                      random_state=SEED, n_jobs=-1)
         imp_c = por_sensor(pic.importances_mean).sort_values(ascending=False)
         top3 = list(imp_c.index[:3])
@@ -986,7 +1036,7 @@ for tarea, tabla in [('B1_banda_w', res_b1), ('B1_criticidad', res_b1),
 if len(causante):
     g = causante[causante.clase == 'GLOBAL'].iloc[0]
     por_clase = causante[causante.clase != 'GLOBAL']
-    print('\nVariable causante (RF / SIN_EXTREMOS):')
+    print(f'\nVariable causante ({NOMBRE_ATRIB} / SIN_EXTREMOS):')
     print(f'  global: modelo -> {g.sensor_modelo_top1} | sensor_origen más '
           f'frecuente -> {g.sensor_origen_moda} | '
           f'{"COINCIDEN" if g.coincide_top1 else "NO coinciden"} '
