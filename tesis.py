@@ -308,14 +308,47 @@ if len(_completas) < 0.5 * len(df_limpio1):
 T_TRAIN, T_VAL = _corte_en_borde_de_tramo(
     df_limpio1.loc[_completas], FRAC_TRAIN, FRAC_VAL)
 
-es_train_01 = (df_limpio1.index <= T_TRAIN).to_numpy()
+# PARCHE 6b -- LA MASCARA DE TRAIN SE RESTRINGE A LAS FILAS COMPLETAS.
+#
+# T_TRAIN se eligio sobre las filas completas, pero la mascara se aplicaba a
+# TODO df_limpio1: ~3,5 M filas, de las cuales ~2,2 M tienen algun sensor en
+# NaN, mueren en el dropna() del paso 6 y estan concentradas en el periodo
+# temprano -- o sea, casi todas caen antes de T_TRAIN. La corrida anterior lo
+# delato: "3.154.155 filas de train (90,1 % del registro)" donde tenia que
+# decir ~70 %.
+#
+# El efecto sobre el filtro es chico pero no nulo. mean() y std() ignoran los
+# NaN, pero una fila incompleta trae los OTROS sensores con valor, y esos si
+# entran en la media y la sigma. Son filas que no llegan al archivo final, asi
+# que los limites del filtro quedaban ajustados en parte sobre datos que no
+# existen en el limpio. Es fuga de criterio, y se corrige con la misma
+# definicion de "train" que se uso para elegir el corte.
+es_train_01 = (df_limpio1.index.isin(_completas)
+               & (df_limpio1.index <= T_TRAIN))
+
+# PARCHE 6c -- DOS ERRORES QUE CORTABAN EL PASO 01 ANTES DEL PRIMER JSON.
+#   (a) la linea original era (df_limpio1.index <= T_TRAIN).to_numpy(). Comparar
+#       un DatetimeIndex ya devuelve un np.ndarray, que NO tiene .to_numpy():
+#       AttributeError, en cualquier version de pandas. Arriba ya no esta.
+#   (b) el print citaba _b_tr y _b_va, que no existen fuera de
+#       _corte_en_borde_de_tramo() (alla se llaman _btr y _bva y son locales):
+#       NameError en un kernel nuevo.
+# Con cualquiera de los dos, esta version del paso 01 no podia escribir ni el
+# JSON provisional. El JSON que quedo en Drive lo escribio una version ANTERIOR
+# de la celda, que no tenia todavia el bloque CORTE DEFINITIVO.
+#
+# Y los porcentajes se informan sobre las filas COMPLETAS, que es el universo
+# donde se eligio el corte: ahi train tiene que dar ~70 %.
+_n_tr01 = int(es_train_01.sum())
+_n_va01 = int(((_completas > T_TRAIN) & (_completas <= T_VAL)).sum())
+_n_te01 = int((_completas > T_VAL).sum())
 print(f'\nCORTE DE ENTRENAMIENTO (por muestras, en borde de tramo):')
-print(f'  T_train = {T_TRAIN}   (fin del tramo {_b_tr})')
-print(f'  T_val   = {T_VAL}   (fin del tramo {_b_va})')
-print(f'  muestras: train {int(es_train_01.sum()):,} '
-      f'({100*es_train_01.mean():.1f} %) | '
-      f'val {int(((df_limpio1.index > T_TRAIN) & (df_limpio1.index <= T_VAL)).sum()):,} | '
-      f'test {int((df_limpio1.index > T_VAL).sum()):,}')
+print(f'  T_train = {T_TRAIN}')
+print(f'  T_val   = {T_VAL}')
+print(f'  filas completas: train {_n_tr01:,} '
+      f'({100*_n_tr01/len(_completas):.1f} %) | '
+      f'val {_n_va01:,} ({100*_n_va01/len(_completas):.1f} %) | '
+      f'test {_n_te01:,} ({100*_n_te01/len(_completas):.1f} %)')
 print('  Los porcentajes no van a dar 70/15/15 exacto: los pasos 5 y 6 botan')
 print('  más filas. Se reportan los efectivos al final.')
 
@@ -391,8 +424,15 @@ def filtrar_atipicos(df, variables, n_std=4, umbrales_regla=None, multiplicador=
     umbrales_regla = umbrales_regla or {}
     base = df if mask_train is None else df.loc[mask_train]
     if mask_train is not None:
+        # PARCHE 6b: el porcentaje que importa es contra las filas COMPLETAS
+        # (las que pueden llegar al limpio). Contra el registro entero da
+        # ~25 % y no dice nada; antes del arreglo daba 90,1 % y escondia la fuga.
+        _vars_ok = [c for c in variables if c in df.columns]
+        _n_comp = int(df[_vars_ok].notna().all(axis=1).sum())
         print(f'Estadísticos del filtro ajustados sobre {len(base):,} filas de '
-              f'train ({100*len(base)/len(df):.1f} % del registro).')
+              f'train ({100*len(base)/max(_n_comp, 1):.1f} % de las '
+              f'{_n_comp:,} filas completas; '
+              f'{100*len(base)/len(df):.1f} % del registro).')
     resumen = []
     for col in variables:
         if col not in df.columns:
@@ -605,6 +645,24 @@ if _desvio > 0.05:
 print('\n  Corte verificado: la desviacion es de '
       f'{100*_desvio:.1f} puntos, dentro de lo que los bordes de tramo permiten.')
 
+# PARCHE 6d -- CUANTO SE MOVIO EL CORTE ENTRE EL PROVISIONAL Y EL DEFINITIVO.
+#
+# El chequeo de arriba se calcula sobre el MISMO df_limpio en que se acaba de
+# elegir el corte, asi que por construccion solo puede fallar si un unico
+# tramo pesa mas de 5 puntos del registro. Se deja como esta. Pero la cifra
+# que dice si el filtro quedo ajustado sobre el periodo correcto es otra:
+# que fraccion del limpio FINAL cae antes del corte PROVISIONAL, que es hasta
+# donde miro el filtro. Si queda por encima de la definitiva, el filtro vio un
+# trozo de validacion. No aborta: se imprime para declararlo con su numero.
+_f_prov = float((df_limpio.index <= T_TRAIN_PROV).mean())
+print(f'  El filtro 4 sigma se ajusto hasta el T_train provisional, que en el')
+print(f'  limpio final equivale al {100*_f_prov:.1f} % (definitivo: '
+      f'{100*_f_tr:.1f} %).')
+if T_TRAIN_PROV > T_TRAIN:
+    print(f'  OJO: el provisional quedo DESPUES del definitivo. El filtro vio '
+          f'{100*(_f_prov - _f_tr):.1f} puntos')
+    print('  del periodo de validacion. Es chico, pero va declarado en la memoria.')
+
 _json.dump({'T_train': str(T_TRAIN), 'T_val': str(T_VAL),
             'frac_train': FRAC_TRAIN, 'frac_val': FRAC_VAL,
             'frac_train_efectiva': round(float(_f_tr), 4),
@@ -614,6 +672,7 @@ _json.dump({'T_train': str(T_TRAIN), 'T_val': str(T_VAL),
             'muestras_val': int(_m_va.sum()),
             'muestras_test': int(_m_te.sum()),
             'T_train_provisional_filtro': str(T_TRAIN_PROV),
+            'frac_final_hasta_provisional': round(_f_prov, 4),
             'ajustado_en': 'paso 01, sobre el limpio definitivo'},
            open(ARCHIVO_CORTE, 'w'), indent=2)
 print(f'  Guardado: {ARCHIVO_CORTE}')
