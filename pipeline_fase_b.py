@@ -90,7 +90,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import (f1_score, balanced_accuracy_score,
                              confusion_matrix, cohen_kappa_score,
-                             recall_score, make_scorer)
+                             recall_score)
 from sklearn.inspection import permutation_importance
 from sklearn.utils.class_weight import compute_sample_weight
 
@@ -836,8 +836,14 @@ if CRITERIO_PRINCIPAL in preds_b2:
         sel = te.y == c
         if sel.sum() == 0:
             continue
-        sc = make_scorer(recall_score, labels=[c], average='macro',
-                         zero_division=0)
+        # Scorer escrito a mano y no con make_scorer: make_scorer(recall_score)
+        # hereda pos_label=1 de recall_score, y las versiones nuevas de
+        # scikit-learn lo validan contra las clases aunque average='macro' lo
+        # ignore -- con etiquetas de texto revienta. Esto mide lo mismo: el
+        # recall de la clase c.
+        def sc(est, X, y, c=c):
+            return recall_score(y, est.predict(X), labels=[c],
+                                average='macro', zero_division=0)
         pic = permutation_importance(rf, Xte, te.y, scoring=sc, n_repeats=10,
                                      random_state=SEED, n_jobs=-1)
         imp_c = por_sensor(pic.importances_mean).sort_values(ascending=False)
