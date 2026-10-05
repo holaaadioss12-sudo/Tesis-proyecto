@@ -3735,10 +3735,19 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-EPOCAS = 12          # el pico de separación del paso 04 está en la época 8
+# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
+# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
+# validación. Con un número fijo y corto de épocas el experimento medía qué
+# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
+# producción llegó a su mínimo recién en la época 93.
+EPOCAS_MAX = 100
+PACIENCIA = 15
 ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-ARCHIVO_SALIDA = f'{RUTA_BASE}/04c_barrido_hiperparametros.csv'
-ARCHIVO_FIG = f'{RUTA_BASE}/04c_barrido.png'
+# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
+# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
+# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
+ARCHIVO_SALIDA = f'{RUTA_BASE}/04c_barrido_hiperparametros_v2.csv'
+ARCHIVO_FIG = f'{RUTA_BASE}/04c_barrido_v2.png'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -3776,27 +3785,52 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-res = evaluar_reglas(df, verbose=False)
-# evaluar_reglas devuelve un DataFrame con una columna 0/1 por regla, más
-# 'n_reglas_activadas' y 'estado'. La ventana es normal si no se activó ninguna.
-mascara_alarma = res['n_reglas_activadas'] > 0
-print(f'Muestras en estado de alarma: {int(mascara_alarma.sum()):,} '
-      f'({100 * mascara_alarma.mean():.1f} %)')
+# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
+# -----------------------------------------------------------------------------
+# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
+# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
+#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
+#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
+#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
+#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
+# Con el corte viejo este experimento entrenaba y validaba sobre períodos
+# distintos a los del modelo que se defiende, y sus números no se podían
+# comparar con él. Ahora las ventanas normales, el período de entrenamiento
+# y el de validación son exactamente los del paso 04.
+import json
+_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
+_f_tr = _corte.get('frac_train_efectiva')
+print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '
+      f'frac_train_efectiva = {_f_tr}')
+if _f_tr is None or abs(_f_tr - _corte.get('frac_train', 0.70)) > 0.05:
+    raise SystemExit('El corte del JSON está desviado (o no dice dónde está). '
+                     'Correr 01 -> 05 con el pipeline parchado antes de esto.')
 
 idx = df.index.to_series()
-tramo_id = (idx.diff() > pd.Timedelta('10s')).cumsum()
-df['_tramo'] = tramo_id.values
+df['_tramo'] = (idx.diff() > pd.Timedelta('10s')).cumsum().values
 tramos, mascaras = [], []
 for _, g in df.groupby('_tramo'):
     if len(g) >= W:
-        tramos.append(g.drop(columns='_tramo'))
-        mascaras.append(mascara_alarma.loc[g.index])
+        t = g.drop(columns='_tramo')
+        r = evaluar_reglas(t, verbose=False)
+        ids = [c for c in r.columns if c not in ('n_reglas_activadas', 'estado')]
+        tramos.append(t)
+        mascaras.append(pd.Series(r[ids].to_numpy().any(axis=1), index=t.index))
 print(f'Tramos útiles: {len(tramos):,}')
+_n_al = sum(int(m.sum()) for m in mascaras)
+_n_tot = sum(len(m) for m in mascaras)
+print(f'Muestras en estado de alarma: {_n_al:,} ({100 * _n_al / _n_tot:.1f} %)')
 
-n = len(tramos)
-n_tr, n_va = int(n * 0.70), int(n * 0.15)
-tr_t, va_t = tramos[:n_tr], tramos[n_tr:n_tr + n_va]
-tr_m, va_m = mascaras[:n_tr], mascaras[n_tr:n_tr + n_va]
+_ini = np.array([t.index[0] for t in tramos])
+_s_tr = _ini <= _T_TRAIN
+_s_va = (_ini > _T_TRAIN) & (_ini <= _T_VAL)
+tr_t = [t for t, k in zip(tramos, _s_tr) if k]
+va_t = [t for t, k in zip(tramos, _s_va) if k]
+tr_m = [m for m, k in zip(mascaras, _s_tr) if k]
+va_m = [m for m, k in zip(mascaras, _s_va) if k]
+print(f'Tramos: train={len(tr_t)} | val={len(va_t)}   '
+      f'(prueba no se toca en este experimento)')
 
 concat = pd.concat(tr_t)[VARIABLES]
 media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
@@ -3875,6 +3909,30 @@ def error_medio(modelo, X, batch=256):
     return np.array(errores)
 
 
+def auc_mann_whitney(e_norm, e_anom):
+    """AUC sin sklearn: el estadístico U normalizado. Empates valen 0,5.
+    Copia literal de la del 04d."""
+    todos = np.concatenate([e_norm, e_anom])
+    rangos = pd.Series(todos).rank(method='average').to_numpy()
+    r_anom = rangos[len(e_norm):].sum()
+    na, nn_ = len(e_anom), len(e_norm)
+    return (r_anom - na * (na + 1) / 2) / (na * nn_)
+
+
+# PARCHE 3 -- QUÉ SE MIDE Y EN QUÉ ÉPOCA
+# -----------------------------------------------------------------------------
+# ANTES: cada configuración se resumía en la época de máxima SEPARACIÓN
+# (razón de medianas anómala/normal) y solo se reportaba eso. El 04d y el
+# 04e mostraron que la separación no predice la detección (rho = -0,25,
+# p = 0,52) y que el error en las ventanas normales sí (rho = -1,0). La
+# pregunta del profesor, además, es si el ERROR DE RECONSTRUCCIÓN mejora.
+# AHORA: cada configuración se resume en la época de MÍNIMA pérdida sobre
+# las normales de validación (el mismo criterio que el early stopping y que
+# el checkpoint autoencoder_W60_normales.pt), y en esa época se reporta:
+#   err_normal     mediana del error en normales de validación (la misma
+#                  cifra que el paso 05 da para val: 0,00639 en producción)
+#   auc, recall    si reconstruir mejor se traduce en detectar mejor
+#   separacion     la de antes, para poder comparar con el 04c viejo
 def entrenar_y_evaluar(cfg):
     """Entrena una configuración y devuelve sus métricas."""
     torch.manual_seed(SEED)
@@ -3887,8 +3945,9 @@ def entrenar_y_evaluar(cfg):
     loader = DataLoader(VD(X_tr_n), batch_size=64, shuffle=True)
 
     t0 = time.time()
-    mejor = {'razon': -1}
-    for ep in range(1, EPOCAS + 1):
+    mejor = {'perdida_val': float('inf')}
+    espera = 0
+    for ep in range(1, EPOCAS_MAX + 1):
         modelo.train()
         perdida = 0.0
         for b in loader:
@@ -3900,25 +3959,43 @@ def entrenar_y_evaluar(cfg):
             perdida += loss.item() * b.size(0)
         perdida /= len(X_tr_n)
 
-        e_norm = float(np.median(error_medio(modelo, X_va_n)))
-        e_anom = float(np.median(error_medio(modelo, X_va_a)))
+        e_n, e_a = error_medio(modelo, X_va_n), error_medio(modelo, X_va_a)
+        perdida_val = float(e_n.mean())      # la pérdida de validación del paso 04
+        e_norm, e_anom = float(np.median(e_n)), float(np.median(e_a))
         razon = e_anom / e_norm if e_norm > 0 else float('nan')
-        if razon > mejor['razon']:
-            mejor = {'epoca': ep, 'razon': razon, 'err_norm': e_norm,
-                     'err_anom': e_anom, 'train': perdida}
-        print(f'    época {ep:>2}  train={perdida:.5f}  normal={e_norm:.5f}  '
-              f'anómala={e_anom:.5f}  razón={razon:5.2f}x')
+        auc = auc_mann_whitney(e_n, e_a)
+        recall = float((e_a > np.percentile(e_n, 90)).mean())
+        if perdida_val < mejor['perdida_val'] - 1e-5:
+            mejor = {'epoca': ep, 'perdida_val': perdida_val, 'err_norm': e_norm,
+                     'err_anom': e_anom, 'razon': razon, 'auc': auc,
+                     'recall': recall, 'train': perdida}
+            espera = 0
+        else:
+            espera += 1
+        if ep == 1 or ep % 5 == 0:
+            print(f'    época {ep:>3}  train={perdida:.5f}  val={perdida_val:.5f}  '
+                  f'normal={e_norm:.5f}  razón={razon:5.2f}x  AUC={auc:.4f}')
+        if espera >= PACIENCIA:
+            print(f'    early stopping en la época {ep} (sin mejora en {PACIENCIA})')
+            break
 
+    if mejor['epoca'] == ep:
+        print('    OJO: el mínimo cayó en la última época corrida; la pérdida')
+        print('    seguía bajando y esta configuración quedó corta de épocas.')
     return {
         'configuracion': cfg['nombre'],
         'lr': cfg['lr'], 'capas': cfg['num_layers'], 'd_model': cfg['d_model'],
         'parametros': n_param,
+        'epocas_corridas': ep,
         'mejor_epoca': mejor['epoca'],
+        'err_normal': round(mejor['err_norm'], 6),
+        'perdida_val': round(mejor['perdida_val'], 6),
+        'auc': round(mejor['auc'], 5),
+        'recall_al_10pct': round(mejor['recall'], 4),
         'separacion': round(mejor['razon'], 3),
-        'err_normal': round(mejor['err_norm'], 5),
-        'err_anomala': round(mejor['err_anom'], 5),
-        'perdida_train': round(mejor['train'], 5),
-        'brecha_train_val': round(mejor['err_norm'] - mejor['train'], 5),
+        'err_anomala': round(mejor['err_anom'], 6),
+        'perdida_train': round(mejor['train'], 6),
+        'brecha_train_val': round(mejor['perdida_val'] - mejor['train'], 6),
         'minutos': round((time.time() - t0) / 60, 1),
     }
 
@@ -3927,7 +4004,8 @@ def entrenar_y_evaluar(cfg):
 # 3. EL BARRIDO — con reanudación si Colab se corta
 # =============================================================================
 print('\n' + '=' * 72)
-print(f'3. BARRIDO — {len(CONFIGS)} configuraciones, {EPOCAS} épocas cada una')
+print(f'3. BARRIDO — {len(CONFIGS)} configuraciones, hasta {EPOCAS_MAX} épocas '
+      f'cada una (early stopping, paciencia {PACIENCIA})')
 print('=' * 72)
 
 if os.path.exists(ARCHIVO_SALIDA):
@@ -3947,8 +4025,8 @@ for cfg in CONFIGS:
     hechas = pd.concat([hechas, pd.DataFrame([fila])], ignore_index=True)
     hechas.to_csv(ARCHIVO_SALIDA, sep=';', decimal=',', index=False,
                   encoding='utf-8-sig')
-    print(f'    -> separación {fila["separacion"]}x en la época '
-          f'{fila["mejor_epoca"]}  ({fila["minutos"]} min)  [guardado]')
+    print(f'    -> error normal {fila["err_normal"]} | AUC {fila["auc"]} en la '
+          f'época {fila["mejor_epoca"]}  ({fila["minutos"]} min)  [guardado]')
 
 
 # =============================================================================
@@ -3957,48 +4035,61 @@ for cfg in CONFIGS:
 print('\n' + '=' * 72)
 print('4. RESULTADOS DEL BARRIDO')
 print('=' * 72)
-hechas = hechas.sort_values('separacion', ascending=False)
-print(hechas.to_string(index=False))
+# PARCHE 3 (cont.) -- se ordena por error en normales, que es la pregunta, y
+# al lado va el AUC para ver si reconstruir mejor es también detectar mejor.
+hechas = hechas.sort_values('err_normal')
+print(hechas[['configuracion', 'parametros', 'mejor_epoca', 'err_normal',
+              'auc', 'recall_al_10pct', 'separacion', 'brecha_train_val',
+              'minutos']].to_string(index=False))
 
 base_fila = hechas[hechas.configuracion == 'base (la actual)']
 if len(base_fila):
-    base_sep = float(base_fila.separacion.iloc[0])
-    mejor_fila = hechas.iloc[0]
-    mejora = 100 * (mejor_fila.separacion / base_sep - 1)
+    b = base_fila.iloc[0]
+    m = hechas.iloc[0]
+    d_err = 100 * (m.err_normal / b.err_normal - 1)
     print()
-    print(f'Configuración actual : {base_sep:.3f}x')
-    print(f'Mejor del barrido    : {mejor_fila.separacion:.3f}x  '
-          f'({mejor_fila.configuracion})')
-    print(f'Mejora relativa      : {mejora:+.1f} %')
+    print(f'Configuración actual : error normal {b.err_normal:.6f} | AUC {b.auc:.4f}')
+    print(f'Menor error          : error normal {m.err_normal:.6f} | AUC {m.auc:.4f}'
+          f'  ({m.configuracion})')
+    print(f'Cambio en el error   : {d_err:+.1f} %   |   cambio en AUC: '
+          f'{m.auc - b.auc:+.4f}')
     print()
-    if mejora < 5:
-        print('  La mejora es menor al 5 %. Eso TAMBIÉN es un resultado: significa')
-        print('  que la configuración actual ya está en una zona plana y que el')
-        print('  resultado no depende de un ajuste afortunado de hiperparámetros.')
-        print('  Es un argumento de robustez, y conviene reportarlo así.')
+    if m.configuracion == b.configuracion or d_err > -5:
+        print('  Ninguna configuración baja el error en normales más de un 5 %.')
+        print('  Eso TAMBIÉN es un resultado: la configuración actual está en una')
+        print('  zona plana, y el desempeño no depende de un ajuste afortunado de')
+        print('  hiperparámetros. Es un argumento de robustez.')
     else:
-        print('  La mejora es apreciable. Antes de adoptarla, mirá la columna')
-        print('  brecha_train_val: si creció mucho, el modelo está sobreajustando')
-        print('  y la mejora en separación puede no sostenerse en prueba.')
+        print('  Hay configuraciones que reconstruyen mejor. Con UNA semilla eso es')
+        print('  una dirección, no una conclusión: el 04d las repite con 3 semillas.')
+        print('  Mirá también brecha_train_val: si se abre, es sobreajuste.')
+    print()
+    print('  Correlación entre error en normales y AUC en el barrido:')
+    from scipy.stats import spearmanr
+    rho, p = spearmanr(hechas.err_normal, hechas.auc)
+    print(f'    rho de Spearman = {rho:+.2f} (p = {p:.3f}, n = {len(hechas)})')
+    print('    negativo = reconstruir mejor lo normal va con detectar mejor.')
 
 # --- gráfico ---------------------------------------------------------------
 fig, ejes = plt.subplots(1, 2, figsize=(13, 4.5))
-orden = hechas.sort_values('separacion')
-ejes[0].barh(orden.configuracion, orden.separacion, color='#2a78d6')
+orden = hechas.sort_values('err_normal', ascending=False)
+ejes[0].barh(orden.configuracion, orden.err_normal, color='#2a78d6')
 if len(base_fila):
-    ejes[0].axvline(base_sep, color='#d03b3b', ls='--', lw=1.5)
-    ejes[0].text(base_sep, -0.6, ' actual', color='#d03b3b', fontsize=9)
-ejes[0].set_xlabel('Separación anómala / normal')
-ejes[0].set_title('Qué configuración separa mejor', loc='left', fontweight='bold')
+    ejes[0].axvline(b.err_normal, color='#d03b3b', ls='--', lw=1.5)
+    ejes[0].text(b.err_normal, -0.6, ' actual', color='#d03b3b', fontsize=9)
+ejes[0].set_xlabel('Error de reconstrucción en normales de validación (mediana)')
+ejes[0].set_title('Qué configuración reconstruye mejor lo normal', loc='left',
+                  fontweight='bold')
 ejes[0].grid(alpha=0.3, axis='x')
 
-ejes[1].scatter(hechas.parametros, hechas.separacion, s=70, color='#eb6834')
+ejes[1].scatter(hechas.err_normal, hechas.auc, s=70, color='#eb6834')
 for _, r in hechas.iterrows():
-    ejes[1].annotate(r.configuracion, (r.parametros, r.separacion),
+    ejes[1].annotate(r.configuracion, (r.err_normal, r.auc),
                      fontsize=7.5, xytext=(4, 4), textcoords='offset points')
-ejes[1].set_xlabel('Parámetros del modelo')
-ejes[1].set_ylabel('Separación')
-ejes[1].set_title('¿Más capacidad separa mejor?', loc='left', fontweight='bold')
+ejes[1].set_xlabel('Error en normales (menor es mejor)')
+ejes[1].set_ylabel('AUC en validación')
+ejes[1].set_title('¿Reconstruir mejor es detectar mejor?', loc='left',
+                  fontweight='bold')
 ejes[1].grid(alpha=0.3)
 
 plt.tight_layout()
@@ -4008,8 +4099,12 @@ plt.show()
 print(f'\nGuardado: {ARCHIVO_SALIDA}')
 print(f'Guardado: {ARCHIVO_FIG}')
 print('\n' + '=' * 72)
-print('LISTO. Si adoptás otra configuración, hay que volver a correr el paso 04')
-print('con esos valores y después el 05. El barrido por sí solo no cambia nada.')
+# PARCHE 4 -- el barrido se hizo DESPUÉS de mirar prueba, así que no puede
+# cambiar el modelo que se defiende sin contaminar esa evaluación. Se reporta
+# como análisis de sensibilidad.
+print('LISTO. El modelo de producción NO cambia: el conjunto de prueba ya se')
+print('miró, y elegir otra configuración ahora sería ajustarla a ese resultado.')
+print('Esto se reporta como análisis de sensibilidad de hiperparámetros.')
 print('=' * 72)
 
 """9.- CRITICIDAD VS ERROR
@@ -4315,21 +4410,40 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-EPOCAS = 20                      # las de producción, no las 12 del 04c
+# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
+# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
+# validación. Con un número fijo y corto de épocas el experimento medía qué
+# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
+# producción llegó a su mínimo recién en la época 93.
+EPOCAS_MAX = 100
+PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
 ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-ARCHIVO_SALIDA = f'{RUTA_BASE}/04d_confirmacion_semillas.csv'
-ARCHIVO_RESUMEN = f'{RUTA_BASE}/04d_resumen.csv'
+# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
+# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
+# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
+ARCHIVO_SALIDA = f'{RUTA_BASE}/04d_confirmacion_semillas_v2.csv'
+ARCHIVO_RESUMEN = f'{RUTA_BASE}/04d_resumen_v2.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
 BASE = {'lr': 1e-3, 'num_layers': 2, 'd_model': 64, 'nhead': 4, 'dim_ff': 128}
-CONFIGS = [
-    dict(BASE, nombre='base (la actual)'),
-    dict(BASE, d_model=32, dim_ff=64, nombre='d_model = 32'),
-    dict(BASE, num_layers=3, nombre='capas = 3'),
-]
+# PARCHE 3 -- las dos configuraciones a confirmar salen del 04c NUEVO (v2),
+# no de las del 04c viejo (d_model = 32 y capas = 3), que se eligieron con el
+# corte 70/15/15 y 12 épocas. Se toman las dos de menor error en normales.
+ARCHIVO_04C = f'{RUTA_BASE}/04c_barrido_hiperparametros_v2.csv'
+if not os.path.exists(ARCHIVO_04C):
+    raise SystemExit(f'Falta {ARCHIVO_04C}: correr primero el 04c parchado.')
+_b04c = pd.read_csv(ARCHIVO_04C, sep=';', decimal=',')
+_b04c = (_b04c[_b04c.configuracion != 'base (la actual)']
+         .sort_values('err_normal').head(2))
+CONFIGS = [dict(BASE, nombre='base (la actual)')]
+for _, _r in _b04c.iterrows():
+    CONFIGS.append(dict(BASE, lr=float(_r.lr), num_layers=int(_r.capas),
+                        d_model=int(_r.d_model), dim_ff=2 * int(_r.d_model),
+                        nombre=_r.configuracion))
+print('Configuraciones a confirmar:', [c['nombre'] for c in CONFIGS])
 
 # =============================================================================
 # 1. DATOS — el mismo pipeline del paso 04 y del 04c
@@ -4352,24 +4466,52 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-res = evaluar_reglas(df, verbose=False)
-mascara_alarma = res['n_reglas_activadas'] > 0
-print(f'Muestras en estado de alarma: {int(mascara_alarma.sum()):,} '
-      f'({100 * mascara_alarma.mean():.1f} %)')
+# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
+# -----------------------------------------------------------------------------
+# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
+# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
+#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
+#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
+#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
+#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
+# Con el corte viejo este experimento entrenaba y validaba sobre períodos
+# distintos a los del modelo que se defiende, y sus números no se podían
+# comparar con él. Ahora las ventanas normales, el período de entrenamiento
+# y el de validación son exactamente los del paso 04.
+import json
+_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
+_f_tr = _corte.get('frac_train_efectiva')
+print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '
+      f'frac_train_efectiva = {_f_tr}')
+if _f_tr is None or abs(_f_tr - _corte.get('frac_train', 0.70)) > 0.05:
+    raise SystemExit('El corte del JSON está desviado (o no dice dónde está). '
+                     'Correr 01 -> 05 con el pipeline parchado antes de esto.')
 
 idx = df.index.to_series()
 df['_tramo'] = (idx.diff() > pd.Timedelta('10s')).cumsum().values
 tramos, mascaras = [], []
 for _, g in df.groupby('_tramo'):
     if len(g) >= W:
-        tramos.append(g.drop(columns='_tramo'))
-        mascaras.append(mascara_alarma.loc[g.index])
+        t = g.drop(columns='_tramo')
+        r = evaluar_reglas(t, verbose=False)
+        ids = [c for c in r.columns if c not in ('n_reglas_activadas', 'estado')]
+        tramos.append(t)
+        mascaras.append(pd.Series(r[ids].to_numpy().any(axis=1), index=t.index))
 print(f'Tramos útiles: {len(tramos):,}')
+_n_al = sum(int(m.sum()) for m in mascaras)
+_n_tot = sum(len(m) for m in mascaras)
+print(f'Muestras en estado de alarma: {_n_al:,} ({100 * _n_al / _n_tot:.1f} %)')
 
-n = len(tramos)
-n_tr, n_va = int(n * 0.70), int(n * 0.15)
-tr_t, va_t = tramos[:n_tr], tramos[n_tr:n_tr + n_va]
-tr_m, va_m = mascaras[:n_tr], mascaras[n_tr:n_tr + n_va]
+_ini = np.array([t.index[0] for t in tramos])
+_s_tr = _ini <= _T_TRAIN
+_s_va = (_ini > _T_TRAIN) & (_ini <= _T_VAL)
+tr_t = [t for t, k in zip(tramos, _s_tr) if k]
+va_t = [t for t, k in zip(tramos, _s_va) if k]
+tr_m = [m for m, k in zip(mascaras, _s_tr) if k]
+va_m = [m for m, k in zip(mascaras, _s_va) if k]
+print(f'Tramos: train={len(tr_t)} | val={len(va_t)}   '
+      f'(prueba no se toca en este experimento)')
 
 concat = pd.concat(tr_t)[VARIABLES]
 media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
@@ -4483,7 +4625,8 @@ def entrenar(cfg, semilla):
 
     t0 = time.time()
     mejor = None
-    for ep in range(1, EPOCAS + 1):
+    espera = 0
+    for ep in range(1, EPOCAS_MAX + 1):
         modelo.train()
         perdida = 0.0
         for b in loader:
@@ -4495,20 +4638,33 @@ def entrenar(cfg, semilla):
             perdida += loss.item() * b.size(0)
         perdida /= len(X_tr_n)
 
-        m = metricas(errores(modelo, X_va_n), errores(modelo, X_va_a))
-        # el checkpoint se elige por separación, igual que en el paso 04
-        if mejor is None or m['separacion_mediana'] > mejor['separacion_mediana']:
+        e_n = errores(modelo, X_va_n)
+        m = metricas(e_n, errores(modelo, X_va_a))
+        m['perdida_val'] = float(e_n.mean())
+        # PARCHE 4 -- el checkpoint es el de MÍNIMA pérdida en normales de
+        # validación, como en el 04c parchado (antes: máxima separación). La
+        # pregunta es si el error de reconstrucción mejora; cuál criterio de
+        # checkpoint conviene lo responde el 04e, no este script.
+        if mejor is None or m['perdida_val'] < mejor['perdida_val'] - 1e-5:
             mejor = dict(m, epoca=ep, perdida_train=perdida)
-        if ep % 4 == 0 or ep == 1:
+            espera = 0
+        else:
+            espera += 1
+        if ep % 5 == 0 or ep == 1:
             print(f'    época {ep:>2}  train={perdida:.5f}  '
                   f'sep_mediana={m["separacion_mediana"]:5.2f}  '
                   f'sep_media={m["separacion_media"]:6.2f}  '
                   f'AUC={m["auc"]:.4f}  recall@10%={m["recall_al_10pct"]:.3f}')
+        if espera >= PACIENCIA:
+            print(f'    early stopping en la época {ep} (sin mejora en {PACIENCIA})')
+            break
 
     return {
         'configuracion': cfg['nombre'], 'semilla': semilla,
         'lr': cfg['lr'], 'capas': cfg['num_layers'], 'd_model': cfg['d_model'],
-        'parametros': n_param, 'mejor_epoca': mejor['epoca'],
+        'parametros': n_param, 'epocas_corridas': ep,
+        'mejor_epoca': mejor['epoca'],
+        'perdida_val': round(mejor['perdida_val'], 6),
         'separacion_mediana': round(mejor['separacion_mediana'], 4),
         'separacion_media': round(mejor['separacion_media'], 4),
         'auc': round(mejor['auc'], 5),
@@ -4525,7 +4681,7 @@ def entrenar(cfg, semilla):
 # =============================================================================
 print('\n' + '=' * 72)
 print(f'3. {len(CONFIGS)} configuraciones x {len(SEMILLAS)} semillas x '
-      f'{EPOCAS} épocas = {len(CONFIGS)*len(SEMILLAS)} corridas')
+      f'hasta {EPOCAS_MAX} épocas = {len(CONFIGS)*len(SEMILLAS)} corridas')
 print('=' * 72)
 
 if os.path.exists(ARCHIVO_SALIDA):
@@ -4592,6 +4748,10 @@ print(f'Guardado: {ARCHIVO_RESUMEN}')
 print('\nREGLA DE DECISIÓN: solo cambiar la configuración si la mejora supera')
 print('2 veces la dispersión EN AUC y EN recall. Si solo mejora la separación')
 print('pero no el AUC, no es una mejora de detección: es un cambio de escala.')
+# PARCHE 5 -- igual que en el 04c: esto se corrió después de mirar prueba.
+print('\nAun si alguna configuración pasa esa regla, el modelo de producción NO')
+print('cambia: prueba ya se miró. Se reporta como sensibilidad, y una mejora')
+print('clara queda como recomendación para un reentrenamiento futuro.')
 
 # -*- coding: utf-8 -*-
 """
@@ -4666,18 +4826,27 @@ print('Dispositivo:', device)
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-EPOCAS = 20
+# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
+# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
+# validación. Con un número fijo y corto de épocas el experimento medía qué
+# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
+# producción llegó a su mínimo recién en la época 93.
+EPOCAS_MAX = 100
+PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
 ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-SALIDA_CURVAS = f'{RUTA_BASE}/04e_curvas_por_epoca.csv'
-SALIDA_COMPARA = f'{RUTA_BASE}/04e_comparacion_criterios.csv'
+# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
+# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
+# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
+SALIDA_CURVAS = f'{RUTA_BASE}/04e_curvas_por_epoca_v2.csv'
+SALIDA_COMPARA = f'{RUTA_BASE}/04e_comparacion_criterios_v2.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 CFG = {'lr': 1e-3, 'num_layers': 2, 'd_model': 64, 'nhead': 4, 'dim_ff': 128}
 
 # =============================================================================
-# 1. DATOS — 70/15/15 por tramo, igual que el paso 04, pero ahora SÍ se usa prueba
+# 1. DATOS — el corte por fecha del paso 04 (PARCHE 1), y ahora SÍ se usa prueba
 # =============================================================================
 print('\n' + '=' * 72)
 print('1. PREPARANDO LOS DATOS')
@@ -4697,22 +4866,54 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-res = evaluar_reglas(df, verbose=False)
-mascara_alarma = res['n_reglas_activadas'] > 0
+# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
+# -----------------------------------------------------------------------------
+# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
+# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
+#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
+#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
+#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
+#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
+# Con el corte viejo este experimento entrenaba y validaba sobre períodos
+# distintos a los del modelo que se defiende, y sus números no se podían
+# comparar con él. Ahora las ventanas normales, el período de entrenamiento
+# y el de validación son exactamente los del paso 04.
+import json
+_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
+_f_tr = _corte.get('frac_train_efectiva')
+print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '
+      f'frac_train_efectiva = {_f_tr}')
+if _f_tr is None or abs(_f_tr - _corte.get('frac_train', 0.70)) > 0.05:
+    raise SystemExit('El corte del JSON está desviado (o no dice dónde está). '
+                     'Correr 01 -> 05 con el pipeline parchado antes de esto.')
 
 idx = df.index.to_series()
 df['_tramo'] = (idx.diff() > pd.Timedelta('10s')).cumsum().values
 tramos, mascaras = [], []
 for _, g in df.groupby('_tramo'):
     if len(g) >= W:
-        tramos.append(g.drop(columns='_tramo'))
-        mascaras.append(mascara_alarma.loc[g.index])
+        t = g.drop(columns='_tramo')
+        r = evaluar_reglas(t, verbose=False)
+        ids = [c for c in r.columns if c not in ('n_reglas_activadas', 'estado')]
+        tramos.append(t)
+        mascaras.append(pd.Series(r[ids].to_numpy().any(axis=1), index=t.index))
 print(f'Tramos útiles: {len(tramos):,}')
+_n_al = sum(int(m.sum()) for m in mascaras)
+_n_tot = sum(len(m) for m in mascaras)
+print(f'Muestras en estado de alarma: {_n_al:,} ({100 * _n_al / _n_tot:.1f} %)')
 
-n = len(tramos)
-n_tr, n_va = int(n * 0.70), int(n * 0.15)
-tr_t, va_t, te_t = tramos[:n_tr], tramos[n_tr:n_tr + n_va], tramos[n_tr + n_va:]
-tr_m, va_m, te_m = mascaras[:n_tr], mascaras[n_tr:n_tr + n_va], mascaras[n_tr + n_va:]
+_ini = np.array([t.index[0] for t in tramos])
+_s_tr = _ini <= _T_TRAIN
+_s_va = (_ini > _T_TRAIN) & (_ini <= _T_VAL)
+tr_t = [t for t, k in zip(tramos, _s_tr) if k]
+va_t = [t for t, k in zip(tramos, _s_va) if k]
+tr_m = [m for m, k in zip(mascaras, _s_tr) if k]
+va_m = [m for m, k in zip(mascaras, _s_va) if k]
+_s_te = _ini > _T_VAL
+te_t = [t for t, k in zip(tramos, _s_te) if k]
+te_m = [m for m, k in zip(mascaras, _s_te) if k]
+print(f'Tramos: train={len(tr_t)} | val={len(va_t)} | test={len(te_t)}')
 
 concat = pd.concat(tr_t)[VARIABLES]
 media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
@@ -4819,7 +5020,8 @@ def metricas(e_norm, e_anom, prefijo):
 # 3. ENTRENAR Y REGISTRAR CADA ÉPOCA
 # =============================================================================
 print('\n' + '=' * 72)
-print(f'2. ENTRENANDO — {len(SEMILLAS)} semillas x {EPOCAS} épocas')
+print(f'2. ENTRENANDO — {len(SEMILLAS)} semillas x hasta {EPOCAS_MAX} épocas '
+      f'(early stopping, paciencia {PACIENCIA})')
 print('=' * 72)
 
 if os.path.exists(SALIDA_CURVAS):
@@ -4846,7 +5048,8 @@ for semilla in SEMILLAS:
 
     t0 = time.time()
     filas = []
-    for ep in range(1, EPOCAS + 1):
+    mejor_val, espera = float('inf'), 0
+    for ep in range(1, EPOCAS_MAX + 1):
         modelo.train()
         perdida = 0.0
         for b in loader:
@@ -4858,13 +5061,23 @@ for semilla in SEMILLAS:
             perdida += loss.item() * b.size(0)
         perdida /= len(X_tr_n)
 
-        fila = {'semilla': semilla, 'epoca': ep, 'perdida_train': perdida}
-        fila.update(metricas(errores(modelo, X_va_n), errores(modelo, X_va_a), 'val'))
+        e_vn = errores(modelo, X_va_n)
+        fila = {'semilla': semilla, 'epoca': ep, 'perdida_train': perdida,
+                'val_perdida': float(e_vn.mean())}
+        fila.update(metricas(e_vn, errores(modelo, X_va_a), 'val'))
         fila.update(metricas(errores(modelo, X_te_n), errores(modelo, X_te_a), 'test'))
         filas.append(fila)
         print(f'  época {ep:>2}  val: err_n={fila["val_err_normal"]:.5f} '
               f'sep={fila["val_separacion"]:5.2f} AUC={fila["val_auc"]:.4f}  |  '
               f'test: AUC={fila["test_auc"]:.4f} recall={fila["test_recall"]:.4f}')
+        # PARCHE 2 (cont.) -- el mismo early stopping del paso 04
+        if fila['val_perdida'] < mejor_val - 1e-5:
+            mejor_val, espera = fila['val_perdida'], 0
+        else:
+            espera += 1
+        if espera >= PACIENCIA:
+            print(f'  early stopping en la época {ep} (sin mejora en {PACIENCIA})')
+            break
 
     curvas = pd.concat([curvas, pd.DataFrame(filas)], ignore_index=True)
     curvas.to_csv(SALIDA_CURVAS, sep=';', decimal=',', index=False,
@@ -4879,7 +5092,10 @@ print('3. ¿QUÉ ÉPOCA ELIGE CADA CRITERIO, Y QUÉ DA EN PRUEBA?')
 print('=' * 72)
 
 CRITERIOS = [
-    ('mínima pérdida de validación', 'val_err_normal', 'min',
+    # PARCHE 3 -- 'val_perdida' (media del error en normales) es EXACTAMENTE
+    # la pérdida con que el paso 04 guarda el checkpoint "normales"; antes se
+    # usaba la mediana, que es parecida pero no la misma.
+    ('mínima pérdida de validación', 'val_perdida', 'min',
      'el checkpoint "normales" (guardado, no se usa)'),
     ('máxima separación', 'val_separacion', 'max',
      'el checkpoint "normales_sep" (EL QUE ESTÁ EN PRODUCCIÓN)'),
@@ -4922,7 +5138,13 @@ for nombre, _, _, _ in CRITERIOS:
                         ('test_recall', base_rec, 'recall')]:
         dif = g[met].mean() - b.mean()
         disp = np.sqrt((g[met].std(ddof=1) ** 2 + b.std(ddof=1) ** 2) / 2)
-        veces = dif / disp if disp > 0 else np.nan
+        # PARCHE 5 -- con dispersión cero (los dos criterios eligen la misma
+        # época en todas las semillas) la razón era NaN, y NaN > -1 es False:
+        # el script etiquetaba 'PEOR' a una diferencia de exactamente cero.
+        if disp > 0:
+            veces = dif / disp
+        else:
+            veces = 0.0 if dif == 0 else np.sign(dif) * np.inf
         tag = ('MEJORA CLARA' if veces >= 2 else
                'tendencia' if veces >= 1 else
                'dentro del ruido' if veces > -1 else 'PEOR')
@@ -4942,3 +5164,7 @@ print('de 2 veces la dispersión EN AUC Y EN RECALL sobre PRUEBA, conviene')
 print('cambiar el criterio de selección del checkpoint en el paso 04.')
 print('Si los tres quedan dentro del ruido, el criterio actual está bien y el')
 print('tema queda cerrado: tampoco eso es un fracaso, es una pregunta contestada.')
+# PARCHE 4 -- prueba ya se miró con el modelo de producción: este script la
+# usa para MEDIR, no para elegir. El paso 06 ya comparó los dos checkpoints
+# reales en prueba (AUC 0,836 contra 0,828), y esto lo generaliza a 3 semillas.
+print('\nEl modelo de producción no cambia por este resultado: se reporta.')
