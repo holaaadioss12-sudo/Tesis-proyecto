@@ -67,7 +67,14 @@ print('=' * 70)
 print('0. CARGANDO EL CRUDO')
 print('=' * 70)
 
-df = pd.read_csv(ARCHIVO_ENTRADA, sep=';', parse_dates=['Time'], low_memory=False)
+# PARCHE CRUDO -- el export de CR010 usa ';' como separador (y coma decimal),
+# pero los de CR009 y CR011 vienen con ',' y punto decimal. Se detecta el
+# separador mirando la cabecera en vez de fijarlo.
+with open(ARCHIVO_ENTRADA, encoding='utf-8-sig') as _f:
+    _cab = _f.readline()
+_SEP = ';' if _cab.count(';') > _cab.count(',') else ','
+print(f'Separador detectado: {_SEP!r}')
+df = pd.read_csv(ARCHIVO_ENTRADA, sep=_SEP, parse_dates=['Time'], low_memory=False)
 df = df.set_index('Time').sort_index()
 print(f'Dataset crudo: {df.shape[0]:,} filas × {df.shape[1]} columnas')
 print(f'Rango temporal: {df.index.min()}  ->  {df.index.max()}')
@@ -126,12 +133,20 @@ CANONICAL_LOOKUP = {
 
 
 def parsear_tag(col):
-    tag = col.split('-')[-1].strip()
+    # PARCHE CRUDO -- CR011 trae 'CR011 - CR011_AI': se toma lo que va
+    # despues del ultimo '_' para quedar con el tag ('AI').
+    tag = col.split('-')[-1].strip().split('_')[-1]
     m = re.match(r'^([A-Z]+)(\d*)([A-Z]?)$', tag)
     if not m:
         return None
     prefijo, digitos, sufijo = m.groups()
     sufijo = sufijo or None
+    # PARCHE CRUDO -- cada chancador numera sus tags con otra base: CR010 usa
+    # la serie 350 (LIT354, PIT360, TIT365), CR009 la 300 (LIT304, PIT310) y
+    # CR011 la 400 (LIT404, PIT410). El instrumento es el mismo resto modulo 50,
+    # asi que se traduce al numero de CR010 (resto + 50) y el lookup no cambia.
+    if digitos:
+        digitos = str(int(digitos) % 50 + 50)
     return (prefijo, digitos[-2:] if digitos else None, sufijo)
 
 
