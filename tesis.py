@@ -30,6 +30,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import re
 import numpy as np
 import pandas as pd
@@ -42,8 +56,8 @@ np.random.seed(SEED)
 # Pon en False si no quieres los gráficos exploratorios (son lentos con 5M filas)
 MOSTRAR_GRAFICOS = True
 
-ARCHIVO_ENTRADA = f'{RUTA_BASE}/Dataframe - CR010.csv'
-ARCHIVO_SALIDA = f'{RUTA_BASE}/CR010_limpio.csv'
+ARCHIVO_ENTRADA = f'{RUTA_BASE}/Dataframe - {EQUIPO}.csv'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 
 
 # =============================================================================
@@ -259,7 +273,7 @@ print(f'Filas antes: {filas_antes:,} | después: {len(df_limpio1):,} '
 import json as _json
 
 FRAC_TRAIN, FRAC_VAL = 0.70, 0.15
-ARCHIVO_CORTE = f'{RUTA_BASE}/CR010_corte_split.json'
+ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
 VARIABLES_PARA_CORTE = [c for c in
                         ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
                          'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -762,6 +776,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -777,11 +805,11 @@ np.random.seed(SEED)
 W = 60       # 10 minutos -- el tamaño de ventana acordado con el profesor
 PASO_S = 10  # segundos entre muestras consecutivas (lo usa el bloque 2b)
 
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-ARCHIVO_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_W{W}.csv'
-ARCHIVO_FEATURES = f'{RUTA_BASE}/CR010_features_W{W}.csv'
-ARCHIVO_EVENTOS_REGLA = f'{RUTA_BASE}/CR010_eventos_por_regla.csv'
-ARCHIVO_WASSERSTEIN = f'{RUTA_BASE}/CR010_wasserstein_bandas_W{W}.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
+ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
+ARCHIVO_FEATURES = f'{RUTA_EQ}/{EQUIPO}_features_W{W}.csv'
+ARCHIVO_EVENTOS_REGLA = f'{RUTA_EQ}/{EQUIPO}_eventos_por_regla.csv'
+ARCHIVO_WASSERSTEIN = f'{RUTA_EQ}/{EQUIPO}_wasserstein_bandas_W{W}.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -859,7 +887,7 @@ print(f'Tramos útiles (>= {W} registros): {len(tramos):,}   <- esperado: 1.929'
 # =============================================================================
 import json as _json
 
-ARCHIVO_CORTE = f'{RUTA_BASE}/CR010_corte_split.json'
+ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
 
 # El corte NO se recalcula acá: lo eligió el paso 01, antes del filtro de
 # atípicos, para poder ajustar ese filtro solo con train. Recalcularlo acá
@@ -1578,7 +1606,7 @@ if RUTA_BASE not in _sys.path:
     _sys.path.append(RUTA_BASE)
 from indice_w import IndiceW
 
-ARCHIVO_W_SENSORES = f'{RUTA_BASE}/CR010_w_sensores_W{W}.csv'
+ARCHIVO_W_SENSORES = f'{RUTA_EQ}/{EQUIPO}_w_sensores_W{W}.csv'
 
 # Mismo recorrido de tramos/ventanas que los bloques 3 y 6, así que los
 # tramo_id / ventana_id calzan uno a uno.
@@ -1756,6 +1784,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1766,7 +1808,7 @@ SEED = 42
 np.random.seed(SEED)
 
 W = 60
-ARCHIVO_FEATURES = f'{RUTA_BASE}/CR010_features_W{W}.csv'
+ARCHIVO_FEATURES = f'{RUTA_EQ}/{EQUIPO}_features_W{W}.csv'
 
 # PARCHE 3 -- LA ABLACIÓN AHORA TIENE TRES NIVELES, Y EL TERCERO ES EL QUE
 # PRUEBA ALGO.
@@ -1830,7 +1872,7 @@ print(f'Features de sensores: {len(FEATURES)}   <- esperado: 70')
 # numero de VENTANAS y el paso 04 por numero de TRAMOS: dos periodos distintos
 # sobre los mismos datos.
 import json as _json
-_corte = _json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = _json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _col_t = ('timestamp_inicio' if 'timestamp_inicio' in df.columns
           else 'timestamp_fin')
@@ -2062,6 +2104,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -2105,12 +2161,12 @@ STRIDE_EVAL = W      # sin traslape en val/test
 EPOCHS_MAX = 100
 PACIENCIA = 15       # épocas sin mejorar la pérdida de validación
 
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-RUTA_MODELO = f'{RUTA_BASE}/autoencoder_W{W}_normales.pt'          # menor pérdida
-RUTA_MODELO_SEP = f'{RUTA_BASE}/autoencoder_W{W}_normales_sep.pt'  # mayor separación
-RUTA_NORMALIZADOR = f'{RUTA_BASE}/normalizador_W{W}.npz'
-RUTA_CURVA = f'{RUTA_BASE}/04b_curva_entrenamiento.png'
-RUTA_EPOCAS = f'{RUTA_BASE}/04b_comparacion_epocas.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
+RUTA_MODELO = f'{RUTA_EQ}/autoencoder_W{W}_normales.pt'          # menor pérdida
+RUTA_MODELO_SEP = f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt'  # mayor separación
+RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'
+RUTA_CURVA = f'{RUTA_EQ}/04b_curva_entrenamiento.png'
+RUTA_EPOCAS = f'{RUTA_EQ}/04b_comparacion_epocas.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -2189,7 +2245,7 @@ print(f'Pasos con alguna regla activa: {pasos_en_alarma:,} de {pasos_totales:,} 
 # el paso 03, asi que el normalizador y el modelo ven exactamente el mismo
 # periodo de entrenamiento.
 import json as _json
-_corte = _json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = _json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 
 _ini = np.array([t.index[0] for t in tramos])
@@ -2626,6 +2682,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import math
 import numpy as np
 import pandas as pd
@@ -2640,8 +2710,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Dispositivo:', device)
 
 W = 60
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
-ARCHIVO_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_W{W}.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
+ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
 # Se evalúan los tres modelos de una sola pasada, para poder compararlos.
 # La clave 'principal' marca cuál se usa en el resto del script y cuál queda
 # como columna 'error_reconstruccion' en el CSV de salida.
@@ -2649,10 +2719,10 @@ ARCHIVO_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_W{W}.csv'
 # Por eso cada modelo se busca en varias rutas candidatas y se usa la primera
 # que exista. Así el script corre sin tener que mover archivos en Drive.
 CANDIDATOS = {
-    'AE_normales': [f'{RUTA_BASE}/autoencoder_W{W}_normales.pt',
-                    f'{RUTA_BASE}/CAMBIOS/autoencoder_W{W}_normales.pt'],
-    'AE_normales_sep': [f'{RUTA_BASE}/autoencoder_W{W}_normales_sep.pt',
-                        f'{RUTA_BASE}/CAMBIOS/autoencoder_W{W}_normales_sep.pt'],
+    'AE_normales': [f'{RUTA_EQ}/autoencoder_W{W}_normales.pt',
+                    f'{RUTA_EQ}/CAMBIOS/autoencoder_W{W}_normales.pt'],
+    'AE_normales_sep': [f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt',
+                        f'{RUTA_EQ}/CAMBIOS/autoencoder_W{W}_normales_sep.pt'],
 }
 MODELO_PRINCIPAL = 'AE_normales_sep'
 import os as _os
@@ -2672,8 +2742,8 @@ RUTA_MODELO = MODELOS[MODELO_PRINCIPAL]
 print(f'Modelos encontrados: {len(MODELOS)} de {len(CANDIDATOS)}')
 for _n, _r in MODELOS.items():
     print(f'  {_n:<18} {_r}')
-RUTA_NORMALIZADOR = f'{RUTA_BASE}/normalizador_W{W}.npz'
-ARCHIVO_SALIDA = f'{RUTA_BASE}/CR010_error_reconstruccion_W{W}.csv'
+RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -2720,7 +2790,7 @@ print(f'Tramos útiles: {len(tramos_con_id):,}   <- esperado: 1.929')
 
 # PARCHE 2 -- el mismo corte por fecha que usan los pasos 03 y 04.
 import json as _json
-_corte = _json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = _json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _ini5 = np.array([t[1].index[0] for t in tramos_con_id])
 tramos_train = [t for t, i in zip(tramos_con_id, _ini5) if i <= _T_TRAIN]
@@ -3019,7 +3089,7 @@ plt.ylabel('Error de reconstrucción (MSE)')
 plt.title(f'Separación normal vs. anómala — W={W}  ({razon_media:.2f}x)')
 plt.grid(alpha=0.3, axis='y')
 plt.tight_layout()
-plt.savefig(f'{RUTA_BASE}/05_separacion_normal_anomalo.png', dpi=150)
+plt.savefig(f'{RUTA_EQ}/05_separacion_normal_anomalo.png', dpi=150)
 plt.show()
 
 if 'banda_severidad' in m.columns:
@@ -3032,7 +3102,7 @@ if 'banda_severidad' in m.columns:
     plt.title('Validación de las bandas — el autoencoder nunca vio estas etiquetas')
     plt.grid(alpha=0.3, axis='y')
     plt.tight_layout()
-    plt.savefig(f'{RUTA_BASE}/05_validacion_bandas.png', dpi=150)
+    plt.savefig(f'{RUTA_EQ}/05_validacion_bandas.png', dpi=150)
     plt.show()
 
 print('\n' + '=' * 70)
@@ -3084,12 +3154,26 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import numpy as np
 import pandas as pd
 
 W = 60
-ARCHIVO_ERROR = f'{RUTA_BASE}/CR010_error_reconstruccion_W{W}.csv'
-ARCHIVO_SALIDA = f'{RUTA_BASE}/05b_criterios_umbral.csv'
+ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/05b_criterios_umbral.csv'
 
 print('=' * 72)
 print('05b — CRITERIOS PARA FIJAR EL UMBRAL')
@@ -3245,6 +3329,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import pandas as pd
 
 FILAS = [
@@ -3289,7 +3387,7 @@ cols = ['regla', 'criticidad', 'peso_criticidad', 'tipo', 'componente',
         'falla_potencial', 'variables', 'condicion']
 crit = pd.DataFrame(FILAS, columns=cols)
 
-ruta = f'{RUTA_BASE}/criticidad_reglas.csv'
+ruta = f'{RUTA_EQ}/criticidad_reglas.csv'
 crit.to_csv(ruta, sep=';', index=False, encoding='utf-8-sig')
 
 print(f'Guardado: {ruta}')
@@ -3352,16 +3450,30 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import numpy as np
 import pandas as pd
 
 W = 60
-ARCHIVO_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_W{W}.csv'
-ARCHIVO_REGLAS = f'{RUTA_BASE}/CR010_eventos_por_regla.csv'
-ARCHIVO_CRITICIDAD = f'{RUTA_BASE}/criticidad_reglas.csv'
-ARCHIVO_ERROR = f'{RUTA_BASE}/CR010_error_reconstruccion_W{W}.csv'
-SALIDA_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_criticidad_W{W}.csv'
-SALIDA_COMPARACION = f'{RUTA_BASE}/02b_comparacion_tfidf_criticidad.csv'
+ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
+ARCHIVO_REGLAS = f'{RUTA_EQ}/{EQUIPO}_eventos_por_regla.csv'
+ARCHIVO_CRITICIDAD = f'{RUTA_EQ}/criticidad_reglas.csv'
+ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
+SALIDA_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_criticidad_W{W}.csv'
+SALIDA_COMPARACION = f'{RUTA_EQ}/02b_comparacion_tfidf_criticidad.csv'
 
 print('=' * 72)
 print('02b — CRITICIDAD DEL EXPERTO')
@@ -3708,6 +3820,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -3742,12 +3868,12 @@ STRIDE_EVAL = W
 # producción llegó a su mínimo recién en la época 93.
 EPOCAS_MAX = 100
 PACIENCIA = 15
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 # PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
 # su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
 # devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
-ARCHIVO_SALIDA = f'{RUTA_BASE}/04c_barrido_hiperparametros_v2.csv'
-ARCHIVO_FIG = f'{RUTA_BASE}/04c_barrido_v2.png'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/04c_barrido_hiperparametros_v2.csv'
+ARCHIVO_FIG = f'{RUTA_EQ}/04c_barrido_v2.png'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -3798,7 +3924,7 @@ print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 # comparar con él. Ahora las ventanas normales, el período de entrenamiento
 # y el de validación son exactamente los del paso 04.
 import json
-_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _f_tr = _corte.get('frac_train_efectiva')
 print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '
@@ -4387,6 +4513,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -4418,12 +4558,12 @@ STRIDE_EVAL = W
 EPOCAS_MAX = 100
 PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 # PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
 # su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
 # devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
-ARCHIVO_SALIDA = f'{RUTA_BASE}/04d_confirmacion_semillas_v2.csv'
-ARCHIVO_RESUMEN = f'{RUTA_BASE}/04d_resumen_v2.csv'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/04d_confirmacion_semillas_v2.csv'
+ARCHIVO_RESUMEN = f'{RUTA_EQ}/04d_resumen_v2.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -4432,7 +4572,7 @@ BASE = {'lr': 1e-3, 'num_layers': 2, 'd_model': 64, 'nhead': 4, 'dim_ff': 128}
 # PARCHE 3 -- las dos configuraciones a confirmar salen del 04c NUEVO (v2),
 # no de las del 04c viejo (d_model = 32 y capas = 3), que se eligieron con el
 # corte 70/15/15 y 12 épocas. Se toman las dos de menor error en normales.
-ARCHIVO_04C = f'{RUTA_BASE}/04c_barrido_hiperparametros_v2.csv'
+ARCHIVO_04C = f'{RUTA_EQ}/04c_barrido_hiperparametros_v2.csv'
 if not os.path.exists(ARCHIVO_04C):
     raise SystemExit(f'Falta {ARCHIVO_04C}: correr primero el 04c parchado.')
 _b04c = pd.read_csv(ARCHIVO_04C, sep=';', decimal=',')
@@ -4479,7 +4619,7 @@ print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 # comparar con él. Ahora las ventanas normales, el período de entrenamiento
 # y el de validación son exactamente los del paso 04.
 import json
-_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _f_tr = _corte.get('frac_train_efectiva')
 print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '
@@ -4806,6 +4946,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -4834,12 +4988,12 @@ STRIDE_EVAL = W
 EPOCAS_MAX = 100
 PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 # PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
 # su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
 # devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
-SALIDA_CURVAS = f'{RUTA_BASE}/04e_curvas_por_epoca_v2.csv'
-SALIDA_COMPARA = f'{RUTA_BASE}/04e_comparacion_criterios_v2.csv'
+SALIDA_CURVAS = f'{RUTA_EQ}/04e_curvas_por_epoca_v2.csv'
+SALIDA_COMPARA = f'{RUTA_EQ}/04e_comparacion_criterios_v2.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -4879,7 +5033,7 @@ print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 # comparar con él. Ahora las ventanas normales, el período de entrenamiento
 # y el de validación son exactamente los del paso 04.
 import json
-_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _f_tr = _corte.get('frac_train_efectiva')
 print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '

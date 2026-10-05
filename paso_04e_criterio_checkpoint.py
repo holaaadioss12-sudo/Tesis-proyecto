@@ -51,6 +51,20 @@ from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import sys
 sys.path.append(RUTA_BASE)
 
@@ -79,12 +93,12 @@ STRIDE_EVAL = W
 EPOCAS_MAX = 100
 PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
-ARCHIVO_LIMPIO = f'{RUTA_BASE}/CR010_limpio.csv'
+ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 # PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
 # su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
 # devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
-SALIDA_CURVAS = f'{RUTA_BASE}/04e_curvas_por_epoca_v2.csv'
-SALIDA_COMPARA = f'{RUTA_BASE}/04e_comparacion_criterios_v2.csv'
+SALIDA_CURVAS = f'{RUTA_EQ}/04e_curvas_por_epoca_v2.csv'
+SALIDA_COMPARA = f'{RUTA_EQ}/04e_comparacion_criterios_v2.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -124,7 +138,7 @@ print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 # comparar con él. Ahora las ventanas normales, el período de entrenamiento
 # y el de validación son exactamente los del paso 04.
 import json
-_corte = json.load(open(f'{RUTA_BASE}/CR010_corte_split.json'))
+_corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
 _f_tr = _corte.get('frac_train_efectiva')
 print(f'Corte único: T_train = {_T_TRAIN} | T_val = {_T_VAL} | '

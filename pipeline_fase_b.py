@@ -83,6 +83,20 @@ except ImportError:
 if RUTA_BASE not in sys.path:
     sys.path.append(RUTA_BASE)
 
+# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
+# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
+#     import os; os.environ['EQUIPO'] = 'CR009'
+# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
+# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
+# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
+# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
+# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
+import os as _os
+EQUIPO = _os.environ.get('EQUIPO', 'CR010')
+RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+_os.makedirs(RUTA_EQ, exist_ok=True)
+print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
@@ -109,15 +123,15 @@ np.random.seed(SEED)
 W = 60
 PASO_S = 10
 
-ARCHIVO_VENTANAS = f'{RUTA_BASE}/CR010_ventanas_W{W}.csv'
-ARCHIVO_FEATURES = f'{RUTA_BASE}/CR010_features_W{W}.csv'
-ARCHIVO_ERROR = f'{RUTA_BASE}/CR010_error_reconstruccion_W{W}.csv'
-ARCHIVO_CORTE = f'{RUTA_BASE}/CR010_corte_split.json'
-ARCHIVO_CRIT_02B = f'{RUTA_BASE}/CR010_ventanas_criticidad_W{W}.csv'
-ARCHIVO_05B = f'{RUTA_BASE}/05b_criterios_umbral.csv'
-SALIDA_B1 = f'{RUTA_BASE}/B1_resultados.csv'
-SALIDA_B2 = f'{RUTA_BASE}/B2_resultados.csv'
-SALIDA_CAUSANTE = f'{RUTA_BASE}/B2_variable_causante.csv'
+ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
+ARCHIVO_FEATURES = f'{RUTA_EQ}/{EQUIPO}_features_W{W}.csv'
+ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
+ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
+ARCHIVO_CRIT_02B = f'{RUTA_EQ}/{EQUIPO}_ventanas_criticidad_W{W}.csv'
+ARCHIVO_05B = f'{RUTA_EQ}/05b_criterios_umbral.csv'
+SALIDA_B1 = f'{RUTA_EQ}/B1_resultados.csv'
+SALIDA_B2 = f'{RUTA_EQ}/B2_resultados.csv'
+SALIDA_CAUSANTE = f'{RUTA_EQ}/B2_variable_causante.csv'
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
