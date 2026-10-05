@@ -432,6 +432,60 @@ resumen = pd.DataFrame(filas_res)
 
 
 # =============================================================================
+# 6b. PARCHE 1 — LÍNEA BASE DE LA DETECCIÓN (no de la anticipación)
+# =============================================================================
+# El paso 05 reporta AUC = 0,83 en prueba para separar ventanas con alarma de
+# ventanas quietas, pero sin línea base: no dice si un detector trivial
+# hace lo mismo. Aquí se mide esa misma AUC (todas las ventanas de prueba,
+# alarma vs quieta) para los cuatro detectores, y la DIFERENCIA pareada
+# AE - z_medias remuestreando los mismos tramos para ambos: con eso no basta
+# con mirar si los IC se tocan.
+# Va después de la sección 6 a propósito: bootstrap_tramos comparte el
+# generador aleatorio, y ponerla antes cambiaría los IC ya reportados.
+# Advertencia para la lectura: z_medias parte con ventaja, porque las reglas
+# se disparan por niveles que se ven en las medias (misma lógica que la
+# restricción 2 de la Fase B). Si empata, no significa que el AE sobre.
+print('\n' + '=' * 72)
+print('6b. AUC DE DETECCIÓN EN PRUEBA (alarma vs quieta) — línea base')
+print('=' * 72)
+td = te.copy()
+td['y'] = td.alarma
+print(f'Ventanas de prueba: {len(td):,} | con alarma: {int(td.y.sum()):,}')
+auc_det = {}
+for nom, col in DETECTORES.items():
+    def _aucd(x, col=col):
+        return (roc_auc_score(x.y, x[col])
+                if x.y.nunique() == 2 else np.nan)
+    a = _aucd(td)
+    lo, hi = bootstrap_tramos(td, _aucd)
+    auc_det[nom] = (a, lo, hi)
+    print(f'  {nom:<16} AUC = {a:.3f}   IC 95 % [{lo:.3f}, {hi:.3f}]')
+
+def _dif(x):
+    if x.y.nunique() < 2:
+        return np.nan
+    return (roc_auc_score(x.y, x[DETECTORES[DETECTOR_PRINCIPAL]])
+            - roc_auc_score(x.y, x['z_medias']))
+d_det = _dif(td)
+d_lo, d_hi = bootstrap_tramos(td, _dif)
+print(f'\n  {DETECTOR_PRINCIPAL} - z_medias = {d_det:+.3f}   '
+      f'IC 95 % [{d_lo:+.3f}, {d_hi:+.3f}]')
+if d_lo > 0:
+    print('  -> El autoencoder DETECTA mejor que la línea base trivial.')
+elif d_hi < 0:
+    print('  -> z_medias detecta mejor que el autoencoder: se reporta así.')
+else:
+    print('  -> No hay diferencia demostrable en detección con la línea base.')
+if len(resumen):
+    resumen['auc_deteccion'] = resumen.detector.map(
+        lambda n: round(auc_det[n][0], 3))
+    resumen['auc_det_ic_inf'] = resumen.detector.map(
+        lambda n: round(auc_det[n][1], 3))
+    resumen['auc_det_ic_sup'] = resumen.detector.map(
+        lambda n: round(auc_det[n][2], 3))
+
+
+# =============================================================================
 # 7. GUARDAR Y LEER
 # =============================================================================
 print('\n' + '=' * 72)
