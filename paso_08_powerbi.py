@@ -66,6 +66,7 @@ TABLAS = {
 hojas = {k: [] for k in TABLAS}
 hojas['error_ventanas'] = []
 hojas['deriva_diaria'] = []
+hojas['error_resumen'] = []
 
 for eq in EQUIPOS:
     c = carpeta(eq)
@@ -112,6 +113,22 @@ for eq in EQUIPOS:
         e = e[cols]
         e.insert(0, 'equipo', eq)
         hojas['error_ventanas'].append(e)
+
+        # resumen del error: por conjunto y tipo, y por banda de severidad
+        e['tipo'] = e['es_normal'].astype(str).map({'True': 'normal',
+                                                    'False': 'anomala'})
+        for grupo in (['conjunto', 'tipo'], ['conjunto', 'banda_severidad']):
+            for col, ck in (('err_AE_normales', 'perdida_minima'),
+                            ('err_AE_normales_sep', 'separacion_maxima')):
+                r = (e.groupby(grupo)[col]
+                      .agg(n='size', media='mean', mediana='median',
+                           p95=lambda s: s.quantile(0.95))
+                      .reset_index()
+                      .rename(columns={grupo[1]: 'grupo'}))
+                r.insert(0, 'agrupado_por', grupo[1])
+                r.insert(0, 'checkpoint', ck)
+                r.insert(0, 'equipo', eq)
+                hojas['error_resumen'].append(r)
 
 os.makedirs(SALIDA_DIR, exist_ok=True)
 with pd.ExcelWriter(SALIDA) as xw:
