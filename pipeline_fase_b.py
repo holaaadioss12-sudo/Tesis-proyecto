@@ -148,7 +148,14 @@ VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
 # el error en normales predice el AUC con rho = -1,000 y la separación no lo
 # predice (rho = -0,25, p = 0,52), y el 04e es el que lo decide sobre prueba.
 # Cambiar el filtro es cambiar esta línea y nada más.
-MODELO_AE = 'AE_normales_sep'
+# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
+# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
+# sin mirar prueba: el criterio de máxima separación elige épocas inestables
+# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
+# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
+# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
+# etiquetas. La separación se sigue reportando al lado como comparación.
+MODELO_AE = 'AE_normales'
 
 # Criterios del umbral del filtro. Los dos que nombró el profesor, y la
 # variante robusta por MAD, que entra sólo si la asimetría del error de las

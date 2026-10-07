@@ -148,7 +148,14 @@ N_MIN_MARCADAS = 30
 
 # El detector cuyo resumen va al cierre. Es el mismo checkpoint del paso 05 y
 # de la Fase B; los otros se miden igual, al lado.
-DETECTOR_PRINCIPAL = 'AE_normales_sep'
+# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
+# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
+# sin mirar prueba: el criterio de máxima separación elige épocas inestables
+# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
+# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
+# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
+# etiquetas. La separación se sigue reportando al lado como comparación.
+DETECTOR_PRINCIPAL = 'AE_normales'
 
 PERMITIR_SPLIT_DESVIADO = False
 

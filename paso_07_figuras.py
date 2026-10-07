@@ -65,7 +65,14 @@ from sklearn.metrics import roc_curve, roc_auc_score
 
 W = 60
 MINUTOS_VENTANA = 10
-MODELO_AE = 'AE_normales_sep'        # el principal, como en Fase B y paso 06
+# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
+# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
+# sin mirar prueba: el criterio de máxima separación elige épocas inestables
+# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
+# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
+# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
+# etiquetas. La separación se sigue reportando al lado como comparación.
+MODELO_AE = 'AE_normales'            # el principal, como en Fase B y paso 06
 PERCENTIL_UMBRAL = 95                # el umbral de los pasos B y 06
 
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'

@@ -375,6 +375,18 @@ print('=' * 72)
 
 if os.path.exists(ARCHIVO_SALIDA):
     hechas = pd.read_csv(ARCHIVO_SALIDA, sep=';', decimal=',')
+    # PARCHE P10 -- la clave de lo ya hecho incluye el corte. Antes era solo
+    # (configuración, semilla): una corrida guardada con otro corte se habría
+    # reutilizado sin aviso. Las filas sin la columna T_train son de este mismo
+    # archivo _v2, creado junto con el corte del JSON, y se aceptan con aviso.
+    if 'T_train' in hechas.columns:
+        _otro = hechas.T_train.notna() & (hechas.T_train.astype(str) != str(_T_TRAIN))
+        if _otro.any():
+            print(f'  {int(_otro.sum())} filas guardadas con OTRO corte: se descartan '
+                  f'y se vuelven a correr.')
+            hechas = hechas[~_otro].reset_index(drop=True)
+    else:
+        print('  (filas sin T_train: anteriores a este parche, mismo archivo _v2)')
     ya = set(zip(hechas.configuracion, hechas.semilla))
     print(f'Ya había {len(ya)} corridas hechas. Se saltan.')
 else:
@@ -388,6 +400,7 @@ for cfg in CONFIGS:
             continue
         print(f'\n--- {cfg["nombre"]} · semilla {s} ---')
         fila = entrenar(cfg, s)
+        fila['T_train'] = str(_T_TRAIN)                          # PARCHE P10
         hechas = pd.concat([hechas, pd.DataFrame([fila])], ignore_index=True)
         hechas.to_csv(ARCHIVO_SALIDA, sep=';', decimal=',', index=False,
                       encoding='utf-8-sig')

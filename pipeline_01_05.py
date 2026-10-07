@@ -2797,7 +2797,14 @@ CANDIDATOS = {
     'AE_normales_sep': [f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt',
                         f'{RUTA_EQ}/CAMBIOS/autoencoder_W{W}_normales_sep.pt'],
 }
-MODELO_PRINCIPAL = 'AE_normales_sep'
+# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
+# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
+# sin mirar prueba: el criterio de máxima separación elige épocas inestables
+# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
+# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
+# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
+# etiquetas. La separación se sigue reportando al lado como comparación.
+MODELO_PRINCIPAL = 'AE_normales'
 import os as _os
 MODELOS = {}
 for _n, _rutas in CANDIDATOS.items():

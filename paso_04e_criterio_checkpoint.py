@@ -285,6 +285,18 @@ print('=' * 72)
 
 if os.path.exists(SALIDA_CURVAS):
     curvas = pd.read_csv(SALIDA_CURVAS, sep=';', decimal=',')
+    # PARCHE P10 -- la clave de lo ya hecho incluye el corte. Antes era solo
+    # (configuración, semilla): una corrida guardada con otro corte se habría
+    # reutilizado sin aviso. Las filas sin la columna T_train son de este mismo
+    # archivo _v2, creado junto con el corte del JSON, y se aceptan con aviso.
+    if 'T_train' in curvas.columns:
+        _otro = curvas.T_train.notna() & (curvas.T_train.astype(str) != str(_T_TRAIN))
+        if _otro.any():
+            print(f'  {int(_otro.sum())} filas guardadas con OTRO corte: se descartan '
+                  f'y se vuelven a correr.')
+            curvas = curvas[~_otro].reset_index(drop=True)
+    else:
+        print('  (filas sin T_train: anteriores a este parche, mismo archivo _v2)')
     ya = set(curvas.semilla.unique())
     print(f'Ya había {len(ya)} semillas hechas. Se saltan.')
 else:
@@ -338,7 +350,9 @@ for semilla in SEMILLAS:
             print(f'  early stopping en la época {ep} (sin mejora en {PACIENCIA})')
             break
 
-    curvas = pd.concat([curvas, pd.DataFrame(filas)], ignore_index=True)
+    _nuevas = pd.DataFrame(filas)
+    _nuevas['T_train'] = str(_T_TRAIN)                           # PARCHE P10
+    curvas = pd.concat([curvas, _nuevas], ignore_index=True)
     curvas.to_csv(SALIDA_CURVAS, sep=';', decimal=',', index=False,
                   encoding='utf-8-sig')
     print(f'  ({(time.time()-t0)/60:.1f} min)  [guardado]')
@@ -418,12 +432,24 @@ print(f'Guardado: {SALIDA_COMPARA}')
 print('\n' + '=' * 72)
 print('CÓMO LEERLO')
 print('=' * 72)
-print('Si "máximo AUC" o "mínima pérdida" supera a "máxima separación" por más')
-print('de 2 veces la dispersión EN AUC Y EN RECALL sobre PRUEBA, conviene')
-print('cambiar el criterio de selección del checkpoint en el paso 04.')
-print('Si los tres quedan dentro del ruido, el criterio actual está bien y el')
-print('tema queda cerrado: tampoco eso es un fracaso, es una pregunta contestada.')
+# PARCHE P9 -- la regla anterior decía "si supera por 2 veces la dispersión
+# EN AUC Y EN RECALL sobre PRUEBA, conviene cambiar el criterio": eso es
+# elegir un hiperparámetro mirando prueba. La regla se reescribe en términos
+# de VALIDACIÓN y ESTABILIDAD. Prueba se imprime época a época solo para
+# describir; en la memoria se declara que se observó y que el modelo de
+# producción no se eligió con esa información.
+print('Criterio para elegir el checkpoint (sin mirar prueba): el que elige una')
+print('época ESTABLE entre semillas (baja dispersión de la época elegida) y no')
+print('necesita etiquetas. La desviación de la época elegida por cada criterio')
+print('está en la tabla de arriba. Prueba se reporta una vez, para describir.')
+print('Nota de lectura: si la mínima pérdida cae cerca de la última época, mirar')
+print('la curva de validación: si está plana desde mucho antes, el argmin cae')
+print('tarde por planitud, no porque el modelo siga mejorando.')
 # PARCHE 4 -- prueba ya se miró con el modelo de producción: este script la
 # usa para MEDIR, no para elegir. El paso 06 ya comparó los dos checkpoints
 # reales en prueba (AUC 0,836 contra 0,828), y esto lo generaliza a 3 semillas.
-print('\nEl modelo de producción no cambia por este resultado: se reporta.')
+# PARCHE P8/P9 -- el modelo de producción pasó a mínima pérdida (PARCHE P8 en
+# los pasos 05, 06, 07 y Fase B) por ESTABILIDAD de la época elegida, que es
+# un argumento de validación; no por los números de prueba de esta tabla.
+print('\nModelo de producción: mínima pérdida, elegido por estabilidad de la')
+print('época (validación). Los números de prueba de arriba solo describen.')
