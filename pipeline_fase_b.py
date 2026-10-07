@@ -474,6 +474,36 @@ print('\npct_perdidas_* es la fracción de las graves de cada escala que el')
 print('filtro deja afuera. Va al lado de cada métrica de B: un F1 alto sobre')
 print('lo que pasó el filtro no dice nada de lo que el filtro no dejó pasar.')
 
+# PARCHE P4 -- la elección del criterio, escrita ANTES de mirar prueba.
+# CRITERIO_PRINCIPAL venía en 'percentil 95' sin una regla que lo justifique,
+# y ningún criterio es gratis: bajar el umbral recupera graves y sube las
+# falsas alarmas. Aquí se declara una regla de operación y se aplica sobre
+# VALIDACIÓN: "el umbral más alto (menos falsas alarmas) que deje fuera menos
+# del PCT_MAX_PERDIDA_CRIT1 % de las ventanas de criticidad 1". La regla sólo
+# se IMPRIME junto a la elección vigente: cambiar CRITERIO_PRINCIPAL cambia
+# todos los resultados de B y es una decisión del autor con el profesor, no
+# del script. La asimetría del error de las normales (impresa arriba) es el
+# argumento para preferir el MAD sobre la media + 3 sigma.
+PCT_MAX_PERDIDA_CRIT1 = 5.0
+_eleccion = []
+for crit, u in UMBRALES.items():
+    _g = graves_perdidas(d_va, d_va.error_ae > u)
+    _eleccion.append({'criterio': crit, 'umbral': u,
+                      'falsas_alarmas_val_pct': round(100 * (_nor_va > u).mean(), 1),
+                      'pct_perdidas_criticidad_1_val':
+                          _g['pct_perdidas_criticidad_1']})
+_eleccion = pd.DataFrame(_eleccion).sort_values('umbral', ascending=False)
+print('\nRegla de elección (sobre VALIDACIÓN): el umbral más alto que pierda '
+      f'< {PCT_MAX_PERDIDA_CRIT1:.0f} % de criticidad 1')
+print(_eleccion.to_string(index=False))
+_cumple = _eleccion[_eleccion.pct_perdidas_criticidad_1_val < PCT_MAX_PERDIDA_CRIT1]
+CRITERIO_POR_REGLA = _cumple.criterio.iloc[0] if len(_cumple) else None
+print(f'  -> la regla elige: {CRITERIO_POR_REGLA or "ninguno (todos pierden más)"}'
+      f' | vigente: {CRITERIO_PRINCIPAL}'
+      + ('' if CRITERIO_POR_REGLA == CRITERIO_PRINCIPAL else
+         '   (NO coinciden: decidir con el profesor y, si se cambia, cambiar '
+         'sólo CRITERIO_PRINCIPAL)'))
+
 
 # =============================================================================
 # 5. DOS ESCALAS DE GRAVEDAD: LA EMPÍRICA Y LA DEL EXPERTO
@@ -977,8 +1007,15 @@ for _f in (SALIDA_B1, SALIDA_B2, SALIDA_CAUSANTE):
 # El conjunto que va al cuerpo de la memoria. B1: sólo sensores, sin el
 # error del AE ni el índice W. B2: sin extremos, por la restricción 2. El que
 # gane por F1 se informa igual, pero el intervalo se calcula sobre éste.
+# PARCHE P3 -- B1_criticidad pasa a defenderse con SIN_EXTREMOS. La
+# criticidad de una ventana sale de qué REGLA está activa, y las reglas son
+# umbrales sobre máximos y mínimos: es la misma fuga que obligó a B2 a usar
+# SIN_EXTREMOS (un árbol que corta CM_max en 100 reproduce la regla A). Con
+# SOLO_SENSORES el F1 de B1b quedaba inflado por eso. banda_w no sale de las
+# reglas sino del índice W, cuyas columnas ya bloquea PROHIBIDAS_B1; se
+# mantiene, con la advertencia que se imprime en el resumen.
 CONJUNTO_DEFENDIDO = {'B1_banda_w': 'SOLO_SENSORES',
-                      'B1_criticidad': 'SOLO_SENSORES',
+                      'B1_criticidad': 'SIN_EXTREMOS',
                       'B2_componente': 'SIN_EXTREMOS'}
 
 print('\n' + '=' * 72)
@@ -1011,6 +1048,17 @@ for tarea, tabla in [('B1_banda_w', res_b1), ('B1_criticidad', res_b1),
     print(f'  Ganó por F1: {mg.features} / {mg.modelo} con {mg.f1_macro:.4f}')
     print(f'  El que se defiende: {mm.features} / {mm.modelo} con '
           f'{mm.f1_macro:.4f}')
+    # PARCHE P3 -- cada F1 de gravedad dice de qué escala habla, con el
+    # desacuerdo entre escalas al lado: son dos problemas distintos.
+    if tarea.startswith('B1'):
+        _esc = ('banda_w (empírica, índice W)' if tarea == 'B1_banda_w'
+                else 'criticidad (experta, de las reglas)')
+        print(f'  Escala: {_esc}. Kappa entre las dos escalas: '
+              f'{_kw:.3f}' if '_kw' in globals() else f'  Escala: {_esc}.')
+        if tarea == 'B1_banda_w':
+            print('  Ojo: banda_w es una función determinista de la distribución de')
+            print('  cada sensor en la ventana; media y desviación la aproximan. Un F1')
+            print('  alto aquí mide en parte esa aproximación, no solo gravedad.')
     print(f'  Mejor baseline: {mb.modelo} con F1 {mb.f1_macro:.4f}  ->  '
           f'diferencia {mm.f1_macro - mb.f1_macro:+.4f}')
 

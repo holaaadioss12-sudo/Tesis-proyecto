@@ -488,6 +488,12 @@ def filtrar_atipicos(df, variables, n_std=4, umbrales_regla=None, multiplicador=
 VARIABLES_A_FILTRAR = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
                        'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
+# PARCHE P5 -- copia de las variables ANTES del filtro, solo para medir al
+# final del paso cuanto cambiarian los limites del filtro si se ajustaran con
+# el corte DEFINITIVO en vez del provisional. No se usa para nada mas.
+_pre_filtro_p5 = df_limpio1[[c for c in VARIABLES_A_FILTRAR
+                             if c in df_limpio1.columns]].copy()
+
 df_limpio1 = filtrar_atipicos(df_limpio1, VARIABLES_A_FILTRAR, n_std=4,
                               umbrales_regla=UMBRAL_REGLA_MAX,
                               multiplicador=MULTIPLICADOR_ANCLA,
@@ -692,6 +698,56 @@ if T_TRAIN_PROV > T_TRAIN:
           f'{100*(_f_prov - _f_tr):.1f} puntos')
     print('  del periodo de validacion. Es chico, pero va declarado en la memoria.')
 
+# PARCHE P5 -- LO QUE CAMBIARIA EL FILTRO CON EL CORTE DEFINITIVO, MEDIDO.
+#
+# El filtro 4 sigma se ajusto con el corte provisional, que en el limpio final
+# cubre entre ~65 % y ~74 % segun el equipo, no el 70 %. Como nunca pasa del
+# 85 % (T_val), lo que vio de mas cae en VALIDACION, nunca en prueba. En vez
+# de iterar el paso 01 entero, se mide: los limites con una y otra mascara, y
+# cuantas filas cambiarian de "atipico" a "no atipico" o al reves. Si el
+# cambio es despreciable, queda declarado con su numero.
+_cols_p5 = list(_pre_filtro_p5.columns)
+_mask_def_p5 = (_pre_filtro_p5.index.isin(_completas)
+                & (_pre_filtro_p5.index <= T_TRAIN))
+
+
+def _limites_p5(mask):
+    _b = _pre_filtro_p5.loc[mask]
+    out = {}
+    for c in _cols_p5:
+        m, s = _b[c].mean(), _b[c].std()
+        sup = m + 4 * s
+        if c in UMBRAL_REGLA_MAX:
+            sup = max(sup, MULTIPLICADOR_ANCLA * UMBRAL_REGLA_MAX[c])
+        out[c] = (m - 4 * s, sup)
+    return out
+
+
+_lp, _ld = _limites_p5(es_train_01), _limites_p5(_mask_def_p5)
+_filas_p5 = []
+for c in _cols_p5:
+    x = _pre_filtro_p5[c]
+    at_p = (x < _lp[c][0]) | (x > _lp[c][1])
+    at_d = (x < _ld[c][0]) | (x > _ld[c][1])
+    _rango = max(_lp[c][1] - _lp[c][0], 1e-12)
+    _filas_p5.append({
+        'variable': c,
+        'lim_inf_prov': round(_lp[c][0], 2), 'lim_inf_def': round(_ld[c][0], 2),
+        'lim_sup_prov': round(_lp[c][1], 2), 'lim_sup_def': round(_ld[c][1], 2),
+        'cambio_max_pct_rango': round(100 * max(abs(_lp[c][0] - _ld[c][0]),
+                                                abs(_lp[c][1] - _ld[c][1]))
+                                      / _rango, 2),
+        'filas_que_cambian': int((at_p != at_d).sum())})
+_tabla_p5 = pd.DataFrame(_filas_p5)
+print('\nP5 -- limites del filtro 4 sigma: corte provisional vs definitivo')
+print(_tabla_p5.to_string(index=False))
+_p5_max = float(_tabla_p5.cambio_max_pct_rango.max())
+_p5_filas = int(_tabla_p5.filas_que_cambian.sum())
+print(f'  Cambio maximo de un limite: {_p5_max:.2f} % del rango del filtro | '
+      f'filas que cambiarian de clasificacion: {_p5_filas:,} de '
+      f'{len(_pre_filtro_p5):,} ({100*_p5_filas/max(len(_pre_filtro_p5),1):.3f} %)')
+del _pre_filtro_p5
+
 _json.dump({'T_train': str(T_TRAIN), 'T_val': str(T_VAL),
             'frac_train': FRAC_TRAIN, 'frac_val': FRAC_VAL,
             'frac_train_efectiva': round(float(_f_tr), 4),
@@ -702,6 +758,8 @@ _json.dump({'T_train': str(T_TRAIN), 'T_val': str(T_VAL),
             'muestras_test': int(_m_te.sum()),
             'T_train_provisional_filtro': str(T_TRAIN_PROV),
             'frac_final_hasta_provisional': round(_f_prov, 4),
+            'p5_cambio_max_limite_pct': round(_p5_max, 2),
+            'p5_filas_que_cambian': _p5_filas,
             'ajustado_en': 'paso 01, sobre el limpio definitivo'},
            open(ARCHIVO_CORTE, 'w'), indent=2)
 print(f'  Guardado: {ARCHIVO_CORTE}')

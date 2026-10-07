@@ -138,6 +138,14 @@ PERCENTIL_UMBRAL = 95
 
 N_BOOT = 1000
 
+# PARCHE 2 -- n mínimo para reportar una proporción. Con 4 ventanas marcadas,
+# las 4 seguidas de alarma, p = 1,0000 en todos los remuestreos: el IC del RR
+# sale angosto por construcción y no significa nada (pasó con indice_W en
+# CR011: RR 4,28 [3,66; 4,96] sobre 4 ventanas). Bajo este n se informa la
+# fila con 'n insuficiente' y los números en NaN; la fila no se borra, porque
+# que el detector casi no marque ES el resultado.
+N_MIN_MARCADAS = 30
+
 # El detector cuyo resumen va al cierre. Es el mismo checkpoint del paso 05 y
 # de la Fase B; los otros se miden igual, al lado.
 DETECTOR_PRINCIPAL = 'AE_normales_sep'
@@ -236,6 +244,33 @@ print('prueba marcan mucho más, es la deriva entre períodos que ya mostró la'
 print('Fase B: se reporta, y por eso lo que sigue compara detectores entre sí')
 print('y contra el azar, no contra un 5 % ideal.')
 
+# PARCHE 4 -- la deriva se MIDE, no solo se narra. Para cada detector: qué
+# fracción de las quietas marca en validación (~5 % por construcción) y en
+# prueba, y la mediana del puntaje de las quietas en cada período. Si la
+# mediana de las QUIETAS sube de val a prueba, lo que se movió es el proceso
+# (o el sensor), no la cantidad de anomalías. No usa el generador aleatorio:
+# no altera ningún IC. El umbral NO se recalibra con prueba.
+print('\n' + '=' * 72)
+print('2b. DERIVA DE CALIBRACIÓN ENTRE VALIDACIÓN Y PRUEBA (ventanas quietas)')
+print('=' * 72)
+_filas_deriva = []
+for nom, col in DETECTORES.items():
+    _qv = d[(d.conjunto == 'val') & d.quieta][col]
+    _qt = d[(d.conjunto == 'test') & d.quieta][col]
+    _filas_deriva.append({
+        'detector': nom, 'umbral_p95_val': round(umbrales[nom], 5),
+        'pct_quietas_marcadas_val': round(100 * (_qv > umbrales[nom]).mean(), 1),
+        'pct_quietas_marcadas_test': round(100 * (_qt > umbrales[nom]).mean(), 1),
+        'mediana_quietas_val': round(float(_qv.median()), 5),
+        'mediana_quietas_test': round(float(_qt.median()), 5),
+        'razon_medianas_test_val': round(float(_qt.median() / _qv.median()), 2)
+                                   if _qv.median() else np.nan,
+    })
+deriva = pd.DataFrame(_filas_deriva)
+print(deriva.to_string(index=False))
+print('razón > 1: las ventanas sin ninguna alarma tienen puntajes más altos en')
+print('prueba que en validación. Eso es deriva del proceso, no más anomalías.')
+
 
 # =============================================================================
 # 3. QUÉ VIENE DESPUÉS DE CADA VENTANA
@@ -293,6 +328,11 @@ for nom in DETECTORES:
         p1 = float(y[m].mean()) if m.any() else np.nan
         p0 = float(y[~m].mean()) if (~m).any() else np.nan
         lo, hi = bootstrap_tramos(q, rr)
+        # PARCHE 2 -- el bootstrap se corre igual (consume el generador como
+        # antes, así los IC de las demás filas no cambian) y después se anula.
+        _suf = int(m.sum()) >= N_MIN_MARCADAS
+        if not _suf:
+            p1, lo, hi = np.nan, np.nan, np.nan
         filas_prec.append({
             'detector': nom, 'horizonte_min': int(k * MIN_POR_VENTANA),
             'quietas': len(q), 'marcadas': int(m.sum()),
@@ -300,9 +340,17 @@ for nom in DETECTORES:
             'p_alarma_si_no_marcada': round(p0, 4),
             'riesgo_relativo': round(p1 / p0, 3) if p0 else np.nan,
             'rr_ic_inf': round(lo, 3), 'rr_ic_sup': round(hi, 3),
+            'n_suficiente': _suf,
         })
 prec = pd.DataFrame(filas_prec)
 print(prec.to_string(index=False))
+_insuf = prec[~prec.n_suficiente]
+if len(_insuf):
+    print(f'\nn insuficiente (< {N_MIN_MARCADAS} quietas marcadas): RR e IC no se '
+          f'reportan en estas filas:')
+    for _, _r in _insuf.iterrows():
+        print(f'  {_r.detector:<16} {_r.horizonte_min:>3} min: '
+              f'{_r.marcadas} marcadas de {_r.quietas}')
 
 
 # =============================================================================
@@ -396,6 +444,20 @@ if len(eps):
           f'{100 * (eps.quietas_previas >= 3).mean():.0f} % de los inicios '
           f'tiene 3 o más.')
     print(f'Inicios con una regla TRIP (L, A8, A11): {int(eps.trip.sum())}')
+
+    # PARCHE 3 -- el techo estructural de la anticipación. Un inicio
+    # observable tiene, por definición, una ventana quieta justo antes: un
+    # detector que marcara todo lo avisaría siempre, así que "% avisados" no
+    # tiene techo útil sobre los observables. El techo real aparece al contar
+    # también los censurados (la alarma ya está en la ventana 0 del tramo, sin
+    # nada antes que mirar): esos no los avisa ningún detector. Y el techo del
+    # ADELANTO de cada inicio son sus quietas previas: se mide en cuántos
+    # avisos el adelanto ya es todo lo que el tramo permite ver.
+    _total_inicios = len(eps) + censurados
+    _pct_avisables = 100 * len(eps) / _total_inicios if _total_inicios else np.nan
+    print(f'\nTecho estructural: de {_total_inicios:,} inicios de alarma en prueba, '
+          f'{len(eps):,} ({_pct_avisables:.1f} %) tienen al menos una ventana')
+    print('quieta antes en su tramo. El resto no lo puede avisar ningún detector.')
     print('\nPor detector:')
     for nom in DETECTORES:
         a = eps[f'anticip_{nom}_min']
@@ -420,25 +482,38 @@ if len(eps):
             'auc_anticipacion': round(auc[nom][0], 3),
             'auc_ic_inf': round(auc[nom][1], 3),
             'auc_ic_sup': round(auc[nom][2], 3),
+            # PARCHE 3
+            'inicios_censurados': censurados,
+            'pct_inicios_avisables': round(_pct_avisables, 1),
+            'pct_avisados_sobre_todos': round(100 * avisados.sum()
+                                              / _total_inicios, 1),
+            'pct_avisos_en_techo_adelanto': round(100 * (
+                a[avisados] >= eps.quietas_previas[avisados] * MIN_POR_VENTANA
+            ).mean(), 1) if avisados.any() else np.nan,
         })
         print(f'  {nom:<16} avisó antes del {100 * avisados.mean():5.1f} % de los '
               f'inicios [IC {100 * lo:.1f}-{100 * hi:.1f}] | por azar '
               f'{100 * azar:.1f} % | adelanto mediano '
               f'{a_av.median() if len(a_av) else float("nan"):.0f} min')
+        print(f'  {"":<16} = {100 * avisados.sum() / _total_inicios:.1f} % de '
+              f'TODOS los inicios (techo {_pct_avisables:.1f} %) | en el '
+              f'{filas_res[-1]["pct_avisos_en_techo_adelanto"]} % de los avisos el '
+              f'adelanto ya es todo lo que el tramo deja ver')
 
     print('\nPor criticidad de la regla que se enciende (detector principal):')
     _col = f'anticip_{DETECTOR_PRINCIPAL}_min'
-    print(eps.groupby('criticidad').agg(
-        inicios=(_col, 'size'),
-        pct_avisados=(_col, lambda s: round(100 * (s > 0).mean(), 1)),
-        adelanto_mediano_min=(_col, lambda s: s[s > 0].median()))
-        .to_string())
+    # PARCHE 2 -- los grupos con menos de N_MIN_MARCADAS inicios se marcan
+    # (criticidad 3 tenía 1 inicio y salía "100 % avisados").
+    def _por_grupo(col_g):
+        t = eps.groupby(col_g).agg(
+            inicios=(_col, 'size'),
+            pct_avisados=(_col, lambda s: round(100 * (s > 0).mean(), 1)),
+            adelanto_mediano_min=(_col, lambda s: s[s > 0].median()))
+        t['nota'] = np.where(t.inicios < N_MIN_MARCADAS, 'n insuficiente', '')
+        return t.sort_values('inicios', ascending=False).to_string()
+    print(_por_grupo('criticidad'))
     print('\nPor componente:')
-    print(eps.groupby('componente').agg(
-        inicios=(_col, 'size'),
-        pct_avisados=(_col, lambda s: round(100 * (s > 0).mean(), 1)),
-        adelanto_mediano_min=(_col, lambda s: s[s > 0].median()))
-        .sort_values('inicios', ascending=False).to_string())
+    print(_por_grupo('componente'))
 else:
     print('No hay inicios de episodio observables en prueba.')
 
@@ -498,6 +573,27 @@ if len(resumen):
     resumen['auc_det_ic_sup'] = resumen.detector.map(
         lambda n: round(auc_det[n][2], 3))
 
+# PARCHE 5 -- la diferencia pareada contra z_medias queda en el CSV, para
+# CADA checkpoint del autoencoder, y no solo impresa para el principal. Así la
+# tabla de los tres equipos sale directo de los 06_resumen.csv. Va al final
+# de 6b: los bootstraps nuevos consumen el generador después de todos los IC
+# ya reportados, que no cambian.
+_difs = {DETECTOR_PRINCIPAL: (d_det, d_lo, d_hi)}
+for nom in [n for n in DETECTORES if n.startswith('AE_') and n != DETECTOR_PRINCIPAL]:
+    def _dif_n(x, nom=nom):
+        if x.y.nunique() < 2:
+            return np.nan
+        return (roc_auc_score(x.y, x[DETECTORES[nom]])
+                - roc_auc_score(x.y, x['z_medias']))
+    _lo, _hi = bootstrap_tramos(td, _dif_n)
+    _difs[nom] = (_dif_n(td), _lo, _hi)
+    print(f'  {nom} - z_medias = {_difs[nom][0]:+.3f}   '
+          f'IC 95 % [{_lo:+.3f}, {_hi:+.3f}]')
+if len(resumen):
+    for _k, _j in (('dif_auc_det_vs_z', 0), ('dif_ic_inf', 1), ('dif_ic_sup', 2)):
+        resumen[_k] = resumen.detector.map(
+            lambda n, j=_j: round(_difs[n][j], 3) if n in _difs else np.nan)
+
 
 # =============================================================================
 # 7. GUARDAR Y LEER
@@ -506,7 +602,8 @@ print('\n' + '=' * 72)
 print('7. GUARDANDO')
 print('=' * 72)
 for _df, _f in ((prec, SALIDA_PRECURSORES), (eps, SALIDA_EPISODIOS),
-                (resumen, SALIDA_RESUMEN)):
+                (resumen, SALIDA_RESUMEN),
+                (deriva, f'{RUTA_EQ}/06_deriva.csv')):          # PARCHE 4
     _df.to_csv(_f, sep=';', decimal=',', index=False, encoding='utf-8-sig')
     print(f'Guardado: {_f}')
 
@@ -517,7 +614,10 @@ if len(resumen):
     r = resumen.set_index('detector')
     p = r.loc[DETECTOR_PRINCIPAL]
     pr = prec[(prec.detector == DETECTOR_PRINCIPAL) & (prec.horizonte_min == 10)]
-    if len(pr):
+    if len(pr) and not pr.iloc[0].n_suficiente:                  # PARCHE 2
+        print(f'RR a 10 min: n insuficiente ({pr.iloc[0].marcadas} quietas '
+              f'marcadas, mínimo {N_MIN_MARCADAS}).')
+    elif len(pr):
         pr = pr.iloc[0]
         print(f'Una ventana quieta marcada tiene {pr.riesgo_relativo:.2f} veces '
               f'más probabilidad de ser seguida por una alarma en 10 min '

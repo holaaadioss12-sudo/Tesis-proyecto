@@ -22,6 +22,7 @@ el formato correcto, se les agrega el equipo y se juntan.
 """
 import os
 
+import numpy as np
 import pandas as pd
 
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
@@ -53,6 +54,7 @@ TABLAS = {
     # hoja                  archivo (con {eq} si lleva el prefijo del equipo)
     'resumen_06':           '06_resumen.csv',
     'precursores_06':       '06_precursores.csv',
+    'deriva_06':            '06_deriva.csv',          # PARCHE P2 del paso 06
     'episodios_06':         '06_episodios.csv',
     'entrenamiento_04b':    '04b_comparacion_epocas.csv',
     'faseB_B1':             'B1_resultados.csv',
@@ -136,6 +138,10 @@ with pd.ExcelWriter(SALIDA) as xw:
         if not partes:
             continue
         d = pd.concat(partes, ignore_index=True)
+        # P6: CR010 es el equipo sobre el que se desarrolló todo (arquitectura,
+        # épocas, checkpoint, umbral); CR009 y CR011 son la replicación.
+        d.insert(1, 'rol', np.where(d.equipo == 'CR010', 'desarrollo',
+                                    'replicacion'))
         d.to_excel(xw, sheet_name=hoja, index=False)
         print(f'  hoja {hoja:20s} {len(d):7,} filas')
 print(f'\nGuardado: {SALIDA}')
