@@ -1078,8 +1078,14 @@ for tarea, tabla in [('B1_banda_w', res_b1), ('B1_criticidad', res_b1),
                            p[('-', mb.modelo)], te.tramo_id, clases)
     print(f'  IC 95 % de esa diferencia (bootstrap por tramo): '
           f'[{lo:+.4f}, {hi:+.4f}]')
+    # PARCHE P3b -- faltaba el tercer caso: con el intervalo entero bajo cero
+    # (CR009, B1_criticidad: [-0,091; -0,002]) decía "incluye el cero", y es
+    # la BASE la que le gana al modelo.
     print('  -> ' + ('le gana CLARAMENTE: el intervalo no toca el cero.'
                      if lo > 0 else
+                     'la BASE le gana al modelo: el intervalo está entero bajo '
+                     'cero. Ése es el resultado y se reporta así.'
+                     if hi < 0 else
                      'NO le gana claramente: el intervalo incluye el cero. '
                      'Ése es el resultado y se reporta así.'))
 
