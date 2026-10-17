@@ -1796,6 +1796,19 @@ dataset_features.to_csv(ARCHIVO_FEATURES, index=False)
 print(f'{ARCHIVO_FEATURES}')
 print(f'   {dataset_features.shape[0]:,} filas × {dataset_features.shape[1]} columnas')
 
+# PARCHE P11 -- eventos por regla y ventana, para el paso 10 (nivel de
+# anomalía del profesor: N = suma de peso x veces que se activa cada regla).
+# La matriz 'iniciados' ya está calculada en el bloque 4b (episodios que
+# ARRANCAN en la ventana); sólo no se guardaba. Va en un archivo aparte para
+# no cambiar ni una columna de ventanas_W60.csv.
+ARCHIVO_EVENTOS_VENTANA = f'{RUTA_EQ}/{EQUIPO}_eventos_por_ventana_W{W}.csv'
+_ev_ventana = iniciados.copy()
+_ev_ventana.insert(0, 'ventana_id', ventanas['ventana_id'].to_numpy())
+_ev_ventana.insert(0, 'tramo_id', ventanas['tramo_id'].to_numpy())
+_ev_ventana.to_csv(ARCHIVO_EVENTOS_VENTANA, index=False)
+print(f'{ARCHIVO_EVENTOS_VENTANA}   (PARCHE P11)')
+print(f'   {_ev_ventana.shape[0]:,} filas × {_ev_ventana.shape[1]} columnas')
+
 print('\n--- Primeras filas de las ventanas ---')
 cols_muestra = ['tramo_id', 'ventana_id', 'total_alarmas_ventana', 'total_eventos_ventana',
                 'n_reglas_activas', 'banda_severidad', 'etiqueta_ventana',
