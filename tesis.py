@@ -860,6 +860,10 @@ RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+# PARCHE P12 -- si CR010 ya se movió a su subcarpeta (como asume el paso 09),
+# el paso 02 lee y escribe ahí. Sin la subcarpeta, todo sigue igual.
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 
