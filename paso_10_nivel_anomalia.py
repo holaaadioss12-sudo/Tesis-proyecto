@@ -535,11 +535,13 @@ print('\nCómo leerlo: la silueta mide si los grupos están bien separados entre
 print('sí (de -1 a 1, más es mejor). ARI mide si coinciden con leve / media /')
 print('grave de N (0 = azar, 1 = los mismos grupos). DBSCAN deja ruido: lo que')
 print('no cae en ningún grupo denso.')
-_mejor = agrup.sort_values('ARI_test', ascending=False).iloc[0]
+# El mejor se elige en VALIDACIÓN (ARI_val); prueba sólo se reporta.
+_mejor = agrup.sort_values('ARI_val', ascending=False).iloc[0]
 _sil = agrup.dropna(subset=['silueta_val']).sort_values('silueta_val',
                                                          ascending=False).iloc[0]
-print(f'\nEl que más coincide con las bandas de N en prueba: '
-      f'{_mejor.metodo} sobre {_mejor.representacion} (ARI {_mejor.ARI_test})')
+print(f'\nEl que más coincide con las bandas de N (elegido en validación): '
+      f'{_mejor.metodo} sobre {_mejor.representacion} '
+      f'(ARI val {_mejor.ARI_val} | prueba {_mejor.ARI_test})')
 print(f'Los grupos mejor separados (silueta): {_sil.metodo} sobre '
       f'{_sil.representacion} (silueta {_sil.silueta_val})')
 _k3 = agrup[agrup.metodo == 'K-means k=3']
@@ -625,7 +627,7 @@ if len(_e):
           f'{"sí" if bool(_e.monotona.iloc[0]) else "NO"}')
 print(f'Anómalas para el autoencoder sin ninguna alarma: {len(sin_alarma):,} '
       f'(lista en 10_anomalas_sin_alarma.csv)')
-print(f'Agrupamiento que más coincide con las bandas: {_mejor.metodo} / '
-      f'{_mejor.representacion}, ARI {_mejor.ARI_test}')
+print(f'Agrupamiento que más coincide con las bandas (elegido en validación): '
+      f'{_mejor.metodo} / {_mejor.representacion}, ARI en prueba {_mejor.ARI_test}')
 print('Guardado: 10_nivel_ventanas, 10_cortes, 10_bandas_vs_error, '
       '10_anomalas_sin_alarma, 10_agrupamiento, 10_xgb')
