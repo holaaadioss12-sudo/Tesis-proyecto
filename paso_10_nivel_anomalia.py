@@ -20,8 +20,13 @@ Lo pidió el profesor en la reunión del 16-oct (está en su esquema a mano):
 Este script hace esas tres cosas, y XGBoost al lado como tanteo:
 
   1. N = sum_j w_j * n_j por ventana
-        n_j  veces que ARRANCA la regla j en la ventana (eventos; ISA-18.2
-             define la alarma como la transición, no como la permanencia)
+        n_j  episodios de la regla j ACTIVOS en la ventana: los que arrancan
+             en ella y los que vienen de antes (PARCHE P13). Un episodio cuenta
+             una vez por ventana, dure 10 s o los 10 min (ISA-18.2 cuenta la
+             alarma como episodio, no como muestras); una alarma que entra y
+             sale 20 veces cuenta 20. Con sólo los que ARRANCAN, una ventana en
+             medio de una alarma larga quedaba con N = 0, como advierte el
+             bloque 4b del paso 02.
         w_j  peso por criticidad. OJO, la escala va al revés: criticidad 1 es
              la MÁS grave, así que el peso es 3 / 2 / 1 (escala lineal, la de
              criticidad.PESO). Se reporta al lado una escala empinada 9 / 3 / 1
@@ -47,14 +52,18 @@ Este script hace esas tres cosas, y XGBoost al lado como tanteo:
      extremos? Es la referencia supervisada para leer el agrupamiento.
 
 Entradas: {EQUIPO}_ventanas_W60.csv            (paso 02)
-          {EQUIPO}_eventos_por_ventana_W60.csv (paso 02, PARCHE P11)
+          {EQUIPO}_activos_por_ventana_W60.csv (paso 02, PARCHE P11 v2)
           {EQUIPO}_features_W60.csv            (paso 02)
           {EQUIPO}_error_reconstruccion_W60.csv (paso 05)
           {EQUIPO}_corte_split.json            (paso 01)
           {EQUIPO}_w_sensores_W60.csv          (paso 02, opcional)
           criticidad.py                        (misma carpeta de Drive)
-Si falta el archivo de eventos (paso 02 sin el PARCHE P11), N se calcula con
-MUESTRAS en alarma y el script lo avisa: sirve para mirar, no para la memoria.
+Si falta el archivo de activos (paso 02 sin el PARCHE P11 v2), N se calcula
+con los eventos que ARRANCAN o, si tampoco están, con MUESTRAS en alarma, y el
+script lo avisa: sirve para mirar, no para la memoria.
+
+El umbral del autoencoder es el del paso 05: P95 del error de las ventanas de
+validación SIN NINGUNA ALARMA (por muestras), no de las de N = 0 (PARCHE P13).
 
 Salidas: 10_nivel_ventanas.csv, 10_cortes.csv, 10_bandas_vs_error.csv,
          10_anomalas_sin_alarma.csv, 10_agrupamiento.csv, 10_xgb.csv
@@ -129,6 +138,7 @@ MAX_SILUETA = 5000              # submuestra para la silueta (es O(n^2))
 MIN_CLASE_XGB = 10
 
 ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
+ARCHIVO_ACTIVOS = f'{RUTA_EQ}/{EQUIPO}_activos_por_ventana_W{W}.csv'
 ARCHIVO_EVENTOS = f'{RUTA_EQ}/{EQUIPO}_eventos_por_ventana_W{W}.csv'
 ARCHIVO_FEATURES = f'{RUTA_EQ}/{EQUIPO}_features_W{W}.csv'
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
@@ -161,13 +171,28 @@ ventanas = pd.read_csv(ARCHIVO_VENTANAS, parse_dates=['timestamp_inicio',
 ids_reglas = [c for c in ventanas.columns if c in criticidad.CRITICIDAD]
 print(f'Ventanas: {len(ventanas):,} | reglas: {len(ids_reglas)}   <- esperado: 31')
 
-if os.path.exists(ARCHIVO_EVENTOS):
-    _ev = pd.read_csv(ARCHIVO_EVENTOS)
+# PARCHE P13 -- n_j = episodios ACTIVOS en la ventana (arranquen en ella o
+# vengan de antes). Los que sólo ARRANCAN dejan en N = 0 las ventanas del
+# medio de una alarma larga: en la corrida del 18-oct (CR010) eran 287
+# ventanas de validación y 389 de prueba, casi todas con PEL alta sostenida.
+_fuente = next((f for f in [ARCHIVO_ACTIVOS, ARCHIVO_EVENTOS]
+                if os.path.exists(f)), None)
+if _fuente:
+    _ev = pd.read_csv(_fuente)
     conteo = (ventanas[LLAVES]
               .merge(_ev, on=LLAVES, how='left', validate='one_to_one')
               .reindex(columns=LLAVES + ids_reglas).fillna(0))
-    CONTEO = 'eventos'
-    print('n_j = EVENTOS que arrancan en la ventana (PARCHE P11 del paso 02).')
+    if _fuente == ARCHIVO_ACTIVOS:
+        CONTEO = 'activos'
+        print('n_j = episodios ACTIVOS en la ventana (PARCHE P11 v2 del paso 02).')
+    else:
+        CONTEO = 'iniciados'
+        print('\n' + '!' * 72)
+        print(f'No está {os.path.basename(ARCHIVO_ACTIVOS)}: n_j = eventos que')
+        print('ARRANCAN en la ventana. Las ventanas del medio de una alarma larga')
+        print('quedan con N = 0. Sirve para mirar, NO para la memoria: corre de')
+        print('nuevo paso_02_eventos.py (trae el PARCHE P11 v2).')
+        print('!' * 72)
 else:
     conteo = ventanas[LLAVES + ids_reglas].copy()
     CONTEO = 'muestras'
@@ -179,6 +204,14 @@ else:
     print('!' * 72)
 C = conteo[ids_reglas].astype(float).reset_index(drop=True)
 ventanas = ventanas.reset_index(drop=True)
+
+# PARCHE P13 -- "sin alarma" por MUESTRAS, la misma definición de normal del
+# paso 05 (etiqueta_ventana == 'normal'). El umbral y la lista de la sección 5
+# se apoyan en esto, no en N = 0.
+if 'total_alarmas_ventana' in ventanas.columns:
+    ventanas['sin_alarma'] = ventanas.total_alarmas_ventana == 0
+else:
+    ventanas['sin_alarma'] = ventanas[ids_reglas].sum(axis=1) == 0
 
 # banda_w y el índice W por sensor: en ventanas o en su propio archivo
 COLS_W = [f'w_{v}' for v in ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
@@ -253,6 +286,9 @@ _infl = 100 * (ventanas.N_lineal_sin_colapso.sum() / max(ventanas.N_lineal.sum()
 print(f'Conteo usado: {CONTEO}')
 print(f'Inflación de N si no se colapsaran las familias: {_infl:.1f} %')
 print(f'Ventanas con N = 0: {100 * (ventanas.N_lineal == 0).mean():.1f} %')
+_n0_con_alarma = int(((ventanas.N_lineal == 0) & ~ventanas.sin_alarma).sum())
+print(f'Ventanas con N = 0 pero alguna alarma activa: {_n0_con_alarma:,}   '
+      f'<- con activos debe ser 0')
 print(ventanas.loc[ventanas.N_lineal > 0, ['N_lineal', 'N_empinada']]
       .describe(percentiles=[.25, .5, .75, .9, .99]).round(1).to_string())
 
@@ -375,25 +411,32 @@ for col in [N_PRINC, 'N_empinada', 'n_reglas_activas', 'total_eventos_ventana',
 # 5. ANÓMALAS PARA EL AUTOENCODER CON N = 0: LA LISTA PARA REVISAR
 # =============================================================================
 # OJO AL LEER: el umbral es el P95 del error de las normales de VALIDACIÓN,
-# así que en validación el 5 % de las ventanas con N = 0 queda marcada POR
+# así que en validación el 5 % de las ventanas sin alarma queda marcada POR
 # CONSTRUCCIÓN. Lo que informa no es cuántas son, sino dónde se juntan (fechas,
 # sensor) y si en prueba son más (deriva o algo que las reglas no ven).
+# PARCHE P13 -- el umbral sale de las ventanas SIN ALARMA por muestras (las
+# normales del paso 05), no de las de N = 0: con los eventos que arrancan, las
+# N = 0 incluían ventanas en medio de alarmas largas y el umbral salía 0.68 en
+# vez de 0.0141 (CR010), así que se marcaba el 5 % de lo que se debía.
 # =============================================================================
 print('\n' + '=' * 72)
 print('5. EL AUTOENCODER DICE ANÓMALA Y N = 0')
 print('=' * 72)
 
 d_va, d_te = d[d.conjunto == 'val'], d[d.conjunto == 'test']
-u = float(np.percentile(d_va.loc[d_va[N_PRINC] == 0, 'error_ae'], PERCENTIL_UMBRAL))
+u = float(np.percentile(d_va.loc[d_va.sin_alarma, 'error_ae'], PERCENTIL_UMBRAL))
 d['marcada'] = d.error_ae > u
-print(f'Umbral del autoencoder (P{PERCENTIL_UMBRAL} de las N = 0 de validación): {u:.5f}')
+print(f'Umbral del autoencoder (P{PERCENTIL_UMBRAL} de las ventanas sin alarma de '
+      f'validación): {u:.5f}   <- debe ser el mismo del paso 05')
 
-sin_alarma = d[d.marcada & (d[N_PRINC] == 0)].copy()
+sin_alarma = d[d.marcada & d.sin_alarma].copy()
 for cj in ['val', 'test']:
     m = d[(d.conjunto == cj) & d.marcada]
-    n0 = int((m[N_PRINC] == 0).sum())
-    print(f'  {cj:<5} marcadas {len(m):>6,} | con N = 0: {n0:>5,} '
-          f'({100 * n0 / max(len(m), 1):.1f} % de las marcadas)')
+    n0 = int(m.sin_alarma.sum())
+    n_cj = int(((d.conjunto == cj) & d.sin_alarma).sum())
+    print(f'  {cj:<5} marcadas {len(m):>6,} | sin ninguna alarma: {n0:>5,} '
+          f'({100 * n0 / max(len(m), 1):.1f} % de las marcadas; '
+          f'{100 * n0 / max(n_cj, 1):.1f} % de las ventanas sin alarma)')
 sin_alarma['mes'] = pd.to_datetime(sin_alarma.timestamp_inicio).dt.to_period('M')
 print('\nPor mes:')
 print(sin_alarma.groupby(['conjunto', 'mes']).size().to_string())

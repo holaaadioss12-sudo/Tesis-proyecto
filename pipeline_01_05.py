@@ -1813,6 +1813,18 @@ _ev_ventana.to_csv(ARCHIVO_EVENTOS_VENTANA, index=False)
 print(f'{ARCHIVO_EVENTOS_VENTANA}   (PARCHE P11)')
 print(f'   {_ev_ventana.shape[0]:,} filas × {_ev_ventana.shape[1]} columnas')
 
+# PARCHE P11 v2 -- también los episodios ACTIVOS por ventana (la matriz
+# 'activos' del bloque 4b: los que arrancan en la ventana y los que vienen de
+# antes). Con sólo los que arrancan, una ventana en medio de una alarma larga
+# queda en cero, como advierte el mismo bloque 4b. El paso 10 usa este archivo.
+ARCHIVO_ACTIVOS_VENTANA = f'{RUTA_EQ}/{EQUIPO}_activos_por_ventana_W{W}.csv'
+_act_ventana = activos.copy()
+_act_ventana.insert(0, 'ventana_id', ventanas['ventana_id'].to_numpy())
+_act_ventana.insert(0, 'tramo_id', ventanas['tramo_id'].to_numpy())
+_act_ventana.to_csv(ARCHIVO_ACTIVOS_VENTANA, index=False)
+print(f'{ARCHIVO_ACTIVOS_VENTANA}   (PARCHE P11 v2)')
+print(f'   {_act_ventana.shape[0]:,} filas × {_act_ventana.shape[1]} columnas')
+
 print('\n--- Primeras filas de las ventanas ---')
 cols_muestra = ['tramo_id', 'ventana_id', 'total_alarmas_ventana', 'total_eventos_ventana',
                 'n_reglas_activas', 'banda_severidad', 'etiqueta_ventana',
