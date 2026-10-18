@@ -37,13 +37,21 @@ nivel, para poder contrastarlo con la física. No entrena modelos.
      proporcional a la viscosidad). Si PEL baja cuando T2 sube, el dato es
      coherente con esa explicación; no la prueba, porque no se mide el caudal.
   4. Tendencia mensual: % de ventanas con A5, y PEL, PDF y T2 en las ventanas
-     sin ninguna alarma (la línea base del circuito, mes a mes).
+     sin ninguna alarma (la línea base del circuito, mes a mes), más la
+     corriente de todas las ventanas (cuánto se cargó el chancador ese mes).
+  5. Carga (agregado tras la primera corrida en CR010, donde A5 salió con la
+     misma T2 que las ventanas sin alarma pero con menos corriente y el buje
+     más frío): PEL y % de A5 por quintil de corriente, el mismo % dentro de
+     cada tercil de T2, y Spearman de PEL con T7 y con T2 a carga parecida.
+     Si A5 sube cuando baja la corriente aun con T2 fija, la alarma va con el
+     chancador poco cargado y no con el aceite frío que entra.
 
 Entradas: {EQUIPO}_features_W60.csv              (paso 02: 70 estadísticos)
           {EQUIPO}_activos_por_ventana_W60.csv   (paso 02, PARCHE P11 v2)
           10_nivel_ventanas.csv                  (paso 10)
 Salidas:  10c_perfil_por_nivel.csv, 10c_a5.csv, 10c_pel_vs_t2.csv,
-          10c_mensual.csv, 10c_perfil_niveles.png, 10c_pel_vs_temperatura.png
+          10c_carga.csv, 10c_carga_por_t2.csv, 10c_mensual.csv,
+          10c_perfil_niveles.png, 10c_pel_vs_temperatura.png
 =============================================================================
 """
 import os
@@ -81,6 +89,7 @@ ESCALAS = {'lineal (3/2/1)': 'banda_N_lineal_natural',
            'empinada (9/3/1)': 'banda_N_empinada_natural'}
 MIN_ARRANQUE = 30               # "recién partido": primeros 30 min del tramo
 N_BINS_T2 = 10                  # deciles de temperatura de entrada
+N_BINS_CM = 5                   # quintiles de corriente (carga)
 UMBRAL_D, UMBRAL_A5 = 350, 450  # reglas D y A5 sobre PEL (reglas_engine.py)
 MIN_RHO = 0.10                  # tendencia mínima para llamarla ordenada
 
@@ -251,6 +260,46 @@ print('Negativo = más frío, más presión: coherente con el efecto de la visco
 
 
 # =============================================================================
+# 4b. CARGA: ¿A5 VA CON EL CHANCADOR POCO CARGADO?
+# =============================================================================
+print('\n' + '=' * 72)
+print('4b. PEL Y A5 SEGÚN LA CORRIENTE (CARGA DEL CHANCADOR)')
+print('=' * 72)
+CM, T7 = 'CM media (corriente)', 'T7 media (buje excéntrico)'
+y = d[[CM, T7, T2, PEL, 'A5']].dropna().copy()
+y['quintil_CM'] = pd.qcut(y[CM], N_BINS_CM, labels=False, duplicates='drop') + 1
+y['tercil_T2'] = pd.qcut(y[T2], 3, labels=False, duplicates='drop').map(
+    {0: 'T2 baja', 1: 'T2 media', 2: 'T2 alta'})
+
+
+def _rho(g, a, b):
+    return spearmanr(g[a], g[b]).correlation if len(g) > 10 else np.nan
+
+
+carga = (y.groupby('quintil_CM')
+         .agg(CM_mediana=(CM, 'median'), ventanas=(PEL, 'size'),
+              T7_mediana=(T7, 'median'), T2_mediana=(T2, 'median'),
+              PEL_mediana=(PEL, 'median'),
+              pct_A5=('A5', lambda s: 100 * (s > 0).mean())))
+_g = y.groupby('quintil_CM')[[T7, T2, PEL]]
+carga['rho_T7_PEL'] = _g.apply(_rho, T7, PEL)
+carga['rho_T2_PEL'] = _g.apply(_rho, T2, PEL)
+carga = carga.round(2).reset_index()
+print(carga.to_string(index=False))
+print('quintil 1 = menos corriente. rho_* = Spearman dentro del quintil, es')
+print('decir, a carga parecida: negativo = más frío, más presión.')
+
+carga_t2 = (y.groupby(['tercil_T2', 'quintil_CM'])['A5']
+            .apply(lambda s: 100 * (s > 0).mean()).unstack().round(1)
+            .reindex(['T2 baja', 'T2 media', 'T2 alta']))
+carga_t2.columns = [f'% A5 quintil CM {q}' for q in carga_t2.columns]
+print('\n% de ventanas con A5 por quintil de corriente, dentro de cada tercil de T2:')
+print(carga_t2.to_string())
+print('Si en cada fila el % baja de izquierda a derecha, A5 va con poca carga')
+print('aunque el aceite entre a la misma temperatura.')
+
+
+# =============================================================================
 # 5. TENDENCIA MENSUAL
 # =============================================================================
 print('\n' + '=' * 72)
@@ -262,11 +311,13 @@ mens = (d.groupby('mes')
         .agg(ventanas=('A5', 'size'), pct_A5=('A5', lambda s: 100 * (s > 0).mean()))
         .join(d[_sa].groupby('mes')[[PEL, 'PDF media (ΔP filtro)', T2]].median()
               .rename(columns=lambda c: f'{c.split(" (")[0]} sin alarma'))
+        .join(d.groupby('mes')[CM].median().rename('CM media todas'))
         .round(1))
 print(mens.to_string())
-print('Las tres últimas columnas son la línea base del circuito (ventanas sin')
-print('alarma). Si suben o bajan mes a mes, el circuito está cambiando aunque')
-print('no salten alarmas: filtro cargándose, aceite envejeciendo, desgaste.')
+print('Las columnas "sin alarma" son la línea base del circuito. Si suben o bajan')
+print('mes a mes, el circuito está cambiando aunque no salten alarmas: filtro')
+print('cargándose, aceite envejeciendo, desgaste. "CM media todas" dice cuánto se')
+print('cargó el chancador ese mes, para ver si el % de A5 sigue a la carga.')
 
 
 # =============================================================================
@@ -350,6 +401,8 @@ plt.close(fig)
 perfil_tab.to_csv(salida('10c_perfil_por_nivel.csv'), index=False)
 a5.to_csv(salida('10c_a5.csv'), index=False)
 pv.to_csv(salida('10c_pel_vs_t2.csv'), index=False)
+carga.to_csv(salida('10c_carga.csv'), index=False)
+carga_t2.to_csv(salida('10c_carga_por_t2.csv'))
 mens.to_csv(salida('10c_mensual.csv'))
 
 print('\n' + '=' * 72)
@@ -367,5 +420,8 @@ print(f'A5 en los primeros {MIN_ARRANQUE} min tras partir: '
 print(f'T2 mediana: A5 {_r.loc["A5 (PEL > 450)", T2]} | sin alarma '
       f'{_r.loc["Sin ninguna alarma", T2]}')
 print(f'Spearman T2 contra PEL (todas las ventanas): {_rho_todas:+.2f}')
+print(f'% A5 con la menor corriente (quintil 1): {carga.pct_A5.iloc[0]:.1f} | '
+      f'con la mayor (quintil {carga.quintil_CM.iloc[-1]}): {carga.pct_A5.iloc[-1]:.1f}')
 print('Guardado: 10c_perfil_por_nivel.csv, 10c_a5.csv, 10c_pel_vs_t2.csv, '
-      '10c_mensual.csv, 10c_perfil_niveles.png, 10c_pel_vs_temperatura.png')
+      '10c_carga.csv, 10c_carga_por_t2.csv, 10c_mensual.csv, '
+      '10c_perfil_niveles.png, 10c_pel_vs_temperatura.png')
