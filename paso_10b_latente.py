@@ -67,7 +67,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans, HDBSCAN
+from sklearn.cluster import KMeans
+try:
+    from sklearn.cluster import HDBSCAN      # scikit-learn >= 1.3
+except ImportError:
+    HDBSCAN = None
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
@@ -347,6 +351,8 @@ def anota(metodo, grupos, l_va, l_te, Xs=Xv):
 for k in K_RANGO:
     km = KMeans(n_clusters=k, n_init=20, random_state=SEED).fit(Xv)
     anota(f'K-means k={k}', k, km.labels_, km.predict(Xt))
+
+
 def gmm(k, n_init):
     return GaussianMixture(k, covariance_type='full', n_init=n_init,
                            reg_covar=1e-4, random_state=SEED).fit(Xv)
@@ -363,12 +369,13 @@ for k in range(2, 9):
 _kb = min(_bic, key=_bic.get)
 g = gmm(_kb, 5)
 anota(f'GMM k={_kb} (BIC)', _kb, g.predict(Xv), g.predict(Xt))
-h = HDBSCAN(min_cluster_size=int(min(30, max(5, len(Xv) // 10)))).fit(Xv)
-_gh = len(set(h.labels_) - {-1})
-_lt = (KNeighborsClassifier(1).fit(Xv, h.labels_).predict(Xt) if _gh
-       else np.full(len(Xt), -1))
-anota(f'HDBSCAN ({_gh} grupos, {100 * (h.labels_ == -1).mean():.0f} % ruido)',
-      _gh, h.labels_, _lt)
+if HDBSCAN is not None:
+    h = HDBSCAN(min_cluster_size=int(min(30, max(5, len(Xv) // 10)))).fit(Xv)
+    _gh = len(set(h.labels_) - {-1})
+    _lt = (KNeighborsClassifier(1).fit(Xv, h.labels_).predict(Xt) if _gh
+           else np.full(len(Xt), -1))
+    anota(f'HDBSCAN ({_gh} grupos, {100 * (h.labels_ == -1).mean():.0f} % ruido)',
+          _gh, h.labels_, _lt)
 # Diagnóstico: partir de los centros REALES de cada banda (todas las etiquetas
 # de validación). Si ni así recupera las bandas, éstas se solapan en el latente.
 _n_banda = pd.Series(b_va[pos_va]).value_counts().reindex(NIVELES).fillna(0)
