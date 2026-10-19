@@ -51,7 +51,7 @@ Entradas: {EQUIPO}_features_W60.csv              (paso 02: 70 estadísticos)
           10_nivel_ventanas.csv                  (paso 10)
 Salidas:  10c_perfil_por_nivel.csv, 10c_a5.csv, 10c_pel_vs_t2.csv,
           10c_carga.csv, 10c_carga_por_t2.csv, 10c_mensual.csv,
-          10c_perfil_niveles.png, 10c_pel_vs_temperatura.png
+          10c_perfil_niveles.png, 10c_pel_vs_temperatura.png, 10c_carga.png
 =============================================================================
 """
 import os
@@ -394,6 +394,46 @@ fig.tight_layout()
 fig.savefig(salida('10c_pel_vs_temperatura.png'), dpi=160, facecolor=FONDO)
 plt.close(fig)
 
+# 6c. A5 según la carga: por quintil de corriente dentro de cada tercil de T2,
+#     y mes a mes contra la corriente del mes
+MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct',
+         'nov', 'dic']
+COLOR_T2 = {'T2 baja': '#104281', 'T2 media': '#2a78d6', 'T2 alta': '#86b6ef'}
+ETIQ_T2 = {'T2 baja': 'T2 baja (aceite de entrada más frío)', 'T2 media': 'T2 media',
+           'T2 alta': 'T2 alta (aceite de entrada más caliente)'}
+fig, axs = plt.subplots(1, 2, figsize=(12, 4.8), facecolor=FONDO)
+for a in axs:
+    ejes(a)
+_q = carga.quintil_CM.to_numpy()
+for tercil, fila in carga_t2.iterrows():
+    axs[0].plot(_q, fila.to_numpy(), color=COLOR_T2[tercil], linewidth=2,
+                marker='o', markersize=5, label=ETIQ_T2[tercil])
+axs[0].set_xticks(_q, [f'Q{q}\n{cm:.0f} %' for q, cm in zip(_q, carga.CM_mediana)])
+axs[0].set_xlabel('quintil de corriente (mediana de CM de cada quintil)')
+axs[0].set_ylabel('% de ventanas con A5')
+axs[0].set_ylim(bottom=0)
+axs[0].legend(frameon=False, fontsize=9, labelcolor=TINTA2)
+axs[0].set_title('% de A5 según la corriente, con la T2 de entrada fija',
+                 loc='left', fontsize=10)
+_cm = 'CM media todas'
+axs[1].plot(mens[_cm], mens.pct_A5, 'o', color='#2a78d6', markersize=7,
+            markeredgecolor=FONDO, markeredgewidth=1.5)
+for mes, fila in mens.iterrows():
+    axs[1].annotate(f'{MESES[int(mes[5:7]) - 1]} {mes[2:4]}', (fila[_cm], fila.pct_A5),
+                    xytext=(6, 0), textcoords='offset points', va='center',
+                    fontsize=8.5, color=TINTA2)
+_r_mes = spearmanr(mens[_cm], mens.pct_A5).correlation
+axs[1].margins(x=0.12)
+axs[1].set_xlabel('CM mediana del mes, % (todas las ventanas)')
+axs[1].set_ylabel('% de ventanas con A5 en el mes')
+axs[1].set_title(f'Mes a mes (Spearman {_r_mes:+.2f}, {len(mens)} meses)',
+                 loc='left', fontsize=10)
+fig.suptitle(f'{EQUIPO} · A5 (PEL > 450) según la carga del chancador',
+             color=TINTA, x=0.01, ha='left')
+fig.tight_layout()
+fig.savefig(salida('10c_carga.png'), dpi=160, facecolor=FONDO)
+plt.close(fig)
+
 
 # =============================================================================
 # 7. GUARDAR Y RESUMEN
@@ -424,4 +464,4 @@ print(f'% A5 con la menor corriente (quintil 1): {carga.pct_A5.iloc[0]:.1f} | '
       f'con la mayor (quintil {carga.quintil_CM.iloc[-1]}): {carga.pct_A5.iloc[-1]:.1f}')
 print('Guardado: 10c_perfil_por_nivel.csv, 10c_a5.csv, 10c_pel_vs_t2.csv, '
       '10c_carga.csv, 10c_carga_por_t2.csv, 10c_mensual.csv, '
-      '10c_perfil_niveles.png, 10c_pel_vs_temperatura.png')
+      '10c_perfil_niveles.png, 10c_pel_vs_temperatura.png, 10c_carga.png')
