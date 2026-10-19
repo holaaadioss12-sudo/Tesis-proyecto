@@ -28,10 +28,12 @@ Este script hace esas tres cosas, y XGBoost al lado como tanteo:
              medio de una alarma larga quedaba con N = 0, como advierte el
              bloque 4b del paso 02.
         w_j  peso por criticidad. OJO, la escala va al revés: criticidad 1 es
-             la MÁS grave, así que el peso es 3 / 2 / 1 (escala lineal, la de
-             criticidad.PESO). Se reporta al lado una escala empinada 9 / 3 / 1
-             para el caso que puso el profesor: una alarma muy grave contra
-             otra leve que se activó 20 veces.
+             la MÁS grave. Escala principal EMPINADA 9 / 3 / 1, peso = 3^(3 - c):
+             cada nivel de criticidad pesa el triple del siguiente, así una
+             sola alarma de criticidad 1 no queda como leve (PARCHE P14). Se
+             reporta al lado la lineal 3 / 2 / 1 (peso = 4 - c, criticidad.PESO),
+             con la que una alarma de criticidad 1 vale lo mismo que tres de
+             criticidad 3 y queda bajo el corte de media.
         Las familias anidadas (PEL > 350 y PEL > 450 son la misma presión) se
         cuentan una vez por nivel: cada activación pesa lo que pesa el nivel
         más estricto que alcanzó.
@@ -44,6 +46,8 @@ Este script hace esas tres cosas, y XGBoost al lado como tanteo:
                     Jenks). Es el que se defiende: nadie elige el percentil.
         'terciles'  P33 y P67, como contraste.
   3. El error del autoencoder como validación externa: ¿ordena las bandas?
+     Se mira en VALIDACIÓN y en PRUEBA por separado (PARCHE P14): la escala
+     se juzga en validación; prueba sólo confirma.
   4. Anómalas para el autoencoder con N = 0: la lista para revisar.
   5. K-means (k = 2..6) y DBSCAN sobre las ventanas que el autoencoder marca,
      sin mirar las alarmas. Se ajustan en VALIDACIÓN y se miden en PRUEBA
@@ -123,10 +127,17 @@ LLAVES = ['tramo_id', 'ventana_id']
 AE = 'err_AE_normales'          # checkpoint de pérdida mínima (PARCHE P8)
 PERCENTIL_UMBRAL = 95           # umbral del autoencoder, normales de validación
 
-# Pesos por criticidad. La principal es la de criticidad.PESO (4 - c).
-ESCALAS = {'lineal': {1: 3, 2: 2, 3: 1},
-           'empinada': {1: 9, 2: 3, 3: 1}}
-ESCALA_PRINCIPAL = 'lineal'
+# Pesos por criticidad c (1 = la MÁS grave):
+#   lineal    peso = 4 - c        -> 3 / 2 / 1  (criticidad.PESO)
+#   empinada  peso = 3 ** (3 - c) -> 9 / 3 / 1  (cada nivel pesa el triple)
+ESCALAS = {'lineal': {c: 4 - c for c in (1, 2, 3)},
+           'empinada': {c: 3 ** (3 - c) for c in (1, 2, 3)}}
+# PARCHE P14 -- la principal pasa a ser la empinada. Criterio de proceso: con
+# 3/2/1 una sola alarma de criticidad 1 (N = 3) queda bajo el corte leve/media
+# en los tres equipos; con 9/3/1 (N = 9) queda al menos en media. Comprobación
+# en VALIDACIÓN (sección 4): con 9/3/1 el error del autoencoder crece de nivel
+# en nivel en CR010, CR009 y CR011; con 3/2/1 se rompe en CR009 y CR011.
+ESCALA_PRINCIPAL = 'empinada'
 CORTE_PRINCIPAL = 'natural'
 NIVELES = ['1_leve', '2_media', '3_grave']
 
@@ -355,6 +366,17 @@ print(cortes[['escala', 'metodo', 'corte_leve_media', 'corte_media_grave',
 if (cortes.corte_leve_media == cortes.corte_media_grave).any():
     print('  >> Hay cortes repetidos: N toma pocos valores y dos bandas se juntan.')
 
+# PARCHE P14 -- dónde cae una sola alarma grave contra varias menores
+print('\n¿Dónde cae una ventana con UNA alarma de criticidad 1 (p. ej. A5) y una')
+print('con TRES alarmas de criticidad 3? (cortes naturales de cada escala)')
+for esc, p in ESCALAS.items():
+    _ct = cortes[(cortes.escala == esc) & (cortes.metodo == CORTE_PRINCIPAL)].iloc[0]
+    _ct = [_ct.corte_leve_media, _ct.corte_media_grave]
+    _b1 = bandas(np.array([float(p[1])]), _ct)[0]
+    _b3 = bandas(np.array([3.0 * p[3]]), _ct)[0]
+    print(f'  {esc:<9} una de crit. 1: N = {p[1]:<2} -> {_b1:<8} | '
+          f'tres de crit. 3: N = {3 * p[3]:<2} -> {_b3}')
+
 BANDA = f'banda_N_{ESCALA_PRINCIPAL}_{CORTE_PRINCIPAL}'
 N_PRINC = f'N_{ESCALA_PRINCIPAL}'
 print(f'\nLa banda que se defiende: {BANDA}')
@@ -372,7 +394,7 @@ print(pd.crosstab(ventanas.criticidad_min, ventanas[BANDA]).to_string())
 # banda en banda, la escala de N tiene correlato en la física de la señal.
 # =============================================================================
 print('\n' + '=' * 72)
-print('4. EL ERROR DEL AUTOENCODER CONTRA LAS BANDAS (validación + prueba)')
+print('4. EL ERROR DEL AUTOENCODER CONTRA LAS BANDAS (validación y prueba)')
 print('=' * 72)
 
 err = pd.read_csv(ARCHIVO_ERROR)
@@ -383,25 +405,45 @@ d = err[LLAVES + ['conjunto', AE]].merge(ventanas, on=LLAVES, how='inner',
 d = d.rename(columns={AE: 'error_ae'})
 assert len(d) == len(err), 'El cruce con el paso 05 perdió ventanas.'
 
+# PARCHE P14 -- validación y prueba por separado. La escala se juzga en
+# VALIDACIÓN; prueba sólo confirma. Antes salían mezcladas.
+DATOS_ERR = {'validación': d.conjunto == 'val', 'prueba': d.conjunto == 'test',
+             'validación + prueba': d.conjunto.isin(['val', 'test'])}
 filas_err = []
 for col in [c for c in ventanas.columns if c.startswith('banda_N_')] + \
         [c for c in ['banda_severidad', 'banda_w'] if c in d.columns]:
-    g = d.groupby(col).error_ae.median()
-    if '0_normal' not in g.index:
-        continue
-    veces = (g / g['0_normal']).round(1)
-    orden = [x for x in ['0_normal'] + NIVELES if x in veces.index]
-    mono = bool(np.all(np.diff(veces[orden].to_numpy()) > 0))
-    fila = {'escala': col, 'monotona': mono}
-    fila.update({f'veces_{k}': veces.get(k, np.nan) for k in orden})
-    filas_err.append(fila)
+    for datos, m in DATOS_ERR.items():
+        g = d[m].groupby(col).error_ae.median()
+        if '0_normal' not in g.index:
+            continue
+        veces = (g / g['0_normal']).round(1)
+        orden = [x for x in ['0_normal'] + NIVELES if x in veces.index]
+        mono = bool(np.all(np.diff(veces[orden].to_numpy()) > 0))
+        cuenta = d[m][col].value_counts()
+        fila = {'escala': col, 'datos': datos, 'monotona': mono}
+        fila.update({f'veces_{k}': veces.get(k, np.nan) for k in orden})
+        fila.update({f'n_{k}': int(cuenta.get(k, 0)) for k in orden})
+        filas_err.append(fila)
 bandas_err = pd.DataFrame(filas_err)
+_cn = [c for c in bandas_err if c.startswith('n_')]
+bandas_err[_cn] = bandas_err[_cn].astype('Int64')
 print('Error mediano de cada banda, en veces el de la banda normal:')
-print(bandas_err.to_string(index=False))
+for datos in DATOS_ERR:
+    print(f'\n  {datos}:')
+    print(bandas_err[bandas_err.datos == datos]
+          .drop(columns=['datos'] + [c for c in bandas_err if c.startswith('n_')])
+          .to_string(index=False))
+print(f'\n¿Qué escala ordena el error en VALIDACIÓN? (corte {CORTE_PRINCIPAL})')
+for esc in ESCALAS:
+    _f = bandas_err[(bandas_err.escala == f'banda_N_{esc}_{CORTE_PRINCIPAL}')
+                    & (bandas_err.datos == 'validación')]
+    if len(_f):
+        print(f'  {esc:<9} {"sí" if bool(_f.monotona.iloc[0]) else "NO"}'
+              f'{"   <- principal" if esc == ESCALA_PRINCIPAL else ""}')
 
 print('\nSpearman con el error del autoencoder:')
-for col in [N_PRINC, 'N_empinada', 'n_reglas_activas', 'total_eventos_ventana',
-            'w_max']:
+for col in dict.fromkeys([N_PRINC, 'N_lineal', 'N_empinada', 'n_reglas_activas',
+                          'total_eventos_ventana', 'w_max']):
     if col in d.columns:
         rho = spearmanr(d[col], d.error_ae).correlation
         print(f'  {col:<24} {rho:+.3f}')
@@ -664,10 +706,13 @@ print('=' * 72)
 _c = cortes[(cortes.escala == ESCALA_PRINCIPAL) & (cortes.metodo == CORTE_PRINCIPAL)].iloc[0]
 print(f'Cortes de N: leve hasta {_c.corte_leve_media}, media hasta '
       f'{_c.corte_media_grave}, grave sobre eso.')
-_e = bandas_err[bandas_err.escala == BANDA]
-if len(_e):
-    print(f'¿El error del autoencoder ordena las bandas de N? '
-          f'{"sí" if bool(_e.monotona.iloc[0]) else "NO"}')
+for _datos in ['validación', 'prueba']:
+    _e = bandas_err[(bandas_err.escala == BANDA) & (bandas_err.datos == _datos)]
+    if len(_e):
+        _v = ' / '.join(f'{_e[f"veces_{k}"].iloc[0]:.1f}'
+                        for k in ['0_normal'] + NIVELES if f'veces_{k}' in _e)
+        print(f'¿El error del autoencoder ordena las bandas de N en {_datos}? '
+              f'{"sí" if bool(_e.monotona.iloc[0]) else "NO"}  ({_v} veces el normal)')
 print(f'Anómalas para el autoencoder sin ninguna alarma: {len(sin_alarma):,} '
       f'(lista en 10_anomalas_sin_alarma.csv)')
 print(f'Agrupamiento que más coincide con las bandas (elegido en validación): '

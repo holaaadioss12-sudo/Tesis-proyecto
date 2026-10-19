@@ -24,7 +24,8 @@ nivel, para poder contrastarlo con la física. No entrena modelos.
      T8 socket liner, T9 contraeje), corriente (CM) y vibración máxima.
      Spearman de cada variable con el nivel (0 = normal ... 3 = grave): ¿la
      variable cambia de forma ordenada de nivel en nivel?
-     Se calcula con las dos escalas de pesos (lineal 3/2/1 y empinada 9/3/1)
+     Se calcula con las dos escalas de pesos (empinada 9/3/1, la principal
+     desde el PARCHE P14 del paso 10, y lineal 3/2/1)
      en ENTRENAMIENTO + VALIDACIÓN, que es donde se decide; prueba se reporta
      aparte, como confirmación.
   2. A5 (PEL > 450, "línea muy obstruida", criticidad 1) contra D sin A5
@@ -343,7 +344,7 @@ def ejes(a):
 _ver = ['PEL media (presión entrada aceite)', 'PDF media (ΔP filtro)',
         'T2 media (aceite entrada)', 'T1 - T2 (calor que se lleva el aceite)',
         'T7 media (buje excéntrico)', 'CM media (corriente)']
-_banda = ESCALAS['lineal (3/2/1)']
+_banda = ESCALAS['empinada (9/3/1)']   # PARCHE P14
 _dv = d[d.decision == 'entrenamiento + validación']
 fig, axs = plt.subplots(2, 3, figsize=(12, 6.4), facecolor=FONDO)
 for a, var in zip(axs.ravel(), _ver):
@@ -361,7 +362,7 @@ for a, var in zip(axs.ravel(), _ver):
     a.set_xlim(-0.5, 3.5)
     a.set_title(var, loc='left', fontsize=10)
 fig.suptitle(f'{EQUIPO} · cómo se ve el circuito en cada nivel '
-             f'(mediana y P25–P75, entrenamiento + validación, escala lineal)',
+             f'(mediana y P25–P75, entrenamiento + validación, escala empinada 9/3/1)',
              color=TINTA, x=0.01, ha='left')
 fig.tight_layout()
 fig.savefig(salida('10c_perfil_niveles.png'), dpi=160, facecolor=FONDO)
