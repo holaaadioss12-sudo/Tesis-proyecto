@@ -97,12 +97,27 @@ TIPO_REGLA = {
 }
 TIPOS = ['operacional', 'lubricacion', 'mecanica']
 
-ARCHIVO_LATENTE = f'{RUTA_EQ}/10b_latente.npz'
-ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
-ARCHIVO_NIVEL = f'{RUTA_EQ}/10_nivel_ventanas.csv'
-for _f in [ARCHIVO_LATENTE, ARCHIVO_ERROR, ARCHIVO_NIVEL]:
-    if not os.path.exists(_f):
-        raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 05, 10 y 10b?')
+def buscar(nombre):
+    """La copia más reciente del archivo en la carpeta del equipo o en sus
+    subcarpetas (las salidas se van moviendo a carpetas Cambios_...). Nunca
+    entra a la carpeta de otro equipo."""
+    hallados = []
+    for raiz, carpetas, archivos in os.walk(RUTA_EQ):
+        carpetas[:] = [c for c in carpetas if not c.upper().startswith('CR0')]
+        if nombre in archivos:
+            hallados.append(os.path.join(raiz, nombre))
+    if not hallados:
+        raise SystemExit(f'No encontré {nombre} en {RUTA_EQ} ni en sus subcarpetas. '
+                         '¿Corriste los pasos 05, 10 y 10b?')
+    ruta = max(hallados, key=os.path.getmtime)
+    print(f'  {nombre}: {ruta}')
+    return ruta
+
+
+print('Archivos que se usan (revisa que sean de la misma corrida que el 10b):')
+ARCHIVO_LATENTE = buscar('10b_latente.npz')
+ARCHIVO_ERROR = buscar(f'{EQUIPO}_error_reconstruccion_W{W}.csv')
+ARCHIVO_NIVEL = buscar('10_nivel_ventanas.csv')
 
 
 def salida(nombre):
@@ -145,6 +160,10 @@ print(f'Umbral del autoencoder (P{PERCENTIL_UMBRAL} sin alarma, validación): {u
 
 base_va = ((d.conjunto == 'val') & d.marcada & (d[BANDA] != '0_normal')).to_numpy()
 base_te = ((d.conjunto == 'test') & d.marcada & (d[BANDA] != '0_normal')).to_numpy()
+# Mismo formato que el paso 10b: los números tienen que ser los mismos.
+print(f'Marcadas: validación {(d.marcada & (d.conjunto == "val")).sum():,} '
+      f'(N > 0: {base_va.sum():,}) | prueba {(d.marcada & (d.conjunto == "test")).sum():,} '
+      f'(N > 0: {base_te.sum():,})')
 _sin_tipo = (base_va | base_te) & d.tipo.isna().to_numpy()
 if _sin_tipo.any():
     print(f'Ventanas marcadas con N > 0 sin tipo: {_sin_tipo.sum():,} '
@@ -283,7 +302,9 @@ print(tabla[[c for c in _ver if c in tabla.columns]].to_string(index=False))
 print('\nsilueta_bandas: separación de las bandas REALES en el latente del grupo.')
 print('  Kaufman y Rousseeuw: <= 0,25 sin estructura; 0,26-0,50 débil;')
 print('  0,51-0,70 razonable; > 0,70 fuerte. Negativa: las bandas se mezclan.')
-print('ARI: 0 = azar, 1 = los mismos grupos que leve / media / grave.')
+print('ARI: 0 = azar, 1 = los mismos grupos que leve / media / grave. Es el')
+print('  criterio principal: la silueta baja también con dimensiones sin señal,')
+print('  aunque K-means igual recupere las bandas.')
 print('F1_sonda > F1_azar: la gravedad está en el latente aunque no forme grupos.')
 
 
