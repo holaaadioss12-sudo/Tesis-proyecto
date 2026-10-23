@@ -440,11 +440,16 @@ resumen['corridas'] = g.size()
 resumen = resumen.reindex([r for r in REDES + ['pca'] if r in resumen.index])
 
 
-def bootstrap_contra_ref(clave, alarma, tramo):
+def bootstrap_contra_ref(clave, alarma, tramo, filtro=None):
     """Intervalo del 95 % de (AUC de la red - AUC del Transformer), pareado:
     se remuestrean tramos completos y las dos redes se evalúan sobre las
-    mismas ventanas. El AUC de cada red es el promedio de sus semillas."""
-    errs = {red: [np.load(f'{CARPETA_ERRORES}/{red}_{int(s)}.npz')[clave] for s in sub.semilla]
+    mismas ventanas. El AUC de cada red es el promedio de sus semillas.
+    filtro: ventanas que entran (para la anticipación, las quietas de prueba
+    que tienen ventana siguiente en el mismo tramo)."""
+    if filtro is None:
+        filtro = np.ones(len(alarma), dtype=bool)
+    alarma, tramo = np.asarray(alarma)[filtro].astype(bool), np.asarray(tramo)[filtro]
+    errs = {red: [np.load(f'{CARPETA_ERRORES}/{red}_{int(s)}.npz')[clave][filtro] for s in sub.semilla]
             for red, sub in hechas.groupby('red')}
     if REF not in errs:
         return {}
@@ -462,10 +467,13 @@ def bootstrap_contra_ref(clave, alarma, tramo):
 
 ic_val = bootstrap_contra_ref('e_va', al_va, tr_va)
 ic_te = bootstrap_contra_ref('e_te', al_te, tr_te)
+_q = (~al_te) & ~np.isnan(fut_te)
+ic_an = bootstrap_contra_ref('e_te', np.nan_to_num(fut_te), tr_te, filtro=_q)
 for r in resumen.index:
     if r == REF or r not in ic_val:
         continue
-    for tag, ic, col in [('val', ic_val, 'auc_val'), ('test', ic_te, 'auc_test')]:
+    for tag, ic, col in [('val', ic_val, 'auc_val'), ('test', ic_te, 'auc_test'),
+                         ('anticipacion', ic_an, 'auc_anticipacion')]:
         resumen.loc[r, f'dif_{tag}'] = round(float(resumen.loc[r, col] - resumen.loc[REF, col]), 4)
         resumen.loc[r, f'ic95_{tag}_inf'] = round(float(ic[r][0]), 4)
         resumen.loc[r, f'ic95_{tag}_sup'] = round(float(ic[r][1]), 4)
@@ -504,5 +512,5 @@ if REF in resumen.index:
 resumen.to_csv(ARCHIVO_RESUMEN, sep=';', decimal=',', encoding='utf-8-sig')
 
 print('\nSi ninguna red tiene DIFERENCIA CLARA a favor, se mantiene el Transformer.')
-print('La prueba (dif_test e IC) solo se informa: no cambia la selección.')
+print('La prueba y la anticipación (dif_test, dif_anticipacion y sus IC) solo se informan: no cambian la selección.')
 print(f'\nGuardado: {ARCHIVO_SALIDA}, {ARCHIVO_RESUMEN} y la carpeta {CARPETA_ERRORES}')
