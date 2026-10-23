@@ -59,6 +59,11 @@ Salidas:  04f_arquitecturas.csv      una fila por red y semilla (se escribe
                                      corta, al volver a correr se retoma)
           04f_errores/*.npz          el error de cada ventana, por corrida
           04f_resumen.csv            promedio por red, diferencias e IC
+          04f_niveles.csv            ¿el error de cada red reconoce el nivel
+                                     leve / medio / grave? (sección 6; usa
+                                     10_nivel_ventanas.csv del paso 10)
+Si las salidas de una corrida anterior se movieron a una carpeta Cambios_...
+del equipo, el script las trae de vuelta y retoma sin reentrenar.
 Tiempo: unos 30 a 60 minutos con GPU para las 9 corridas.
 =============================================================================
 """
@@ -67,6 +72,7 @@ import sys
 import json
 import math
 import time
+import shutil
 
 try:
     from google.colab import drive
@@ -89,6 +95,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import f1_score, balanced_accuracy_score
+from scipy.stats import spearmanr
 
 from reglas_engine import evaluar_reglas
 
@@ -112,6 +122,9 @@ SEMILLAS = [int(s) for s in os.environ.get('SEMILLAS', '42,7,2024').split(',')]
 REDES = ['transformer', 'lstm', 'cnn']
 PERCENTIL_UMBRAL = 95
 N_BOOT = 1000
+BANDA = 'banda_N_empinada_natural'   # la escala principal del paso 10 (PARCHE P14)
+NIVELES = ['1_leve', '2_media', '3_grave']
+MIN_CLASE = 10
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
@@ -123,6 +136,30 @@ CARPETA_ERRORES = f'{RUTA_EQ}/04f_errores'
 for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE]:
     if not os.path.exists(_f):
         raise SystemExit(f'Falta {_f}. ¿Corriste el paso 01?')
+
+
+def buscar(nombre, carpeta=False):
+    """La copia más reciente del archivo (o carpeta) en la carpeta del equipo
+    o en sus subcarpetas (las salidas se van moviendo a carpetas Cambios_...).
+    Nunca entra a la carpeta de otro equipo. None si no está."""
+    hallados = []
+    for raiz, carpetas, archivos in os.walk(RUTA_EQ):
+        carpetas[:] = [c for c in carpetas if not c.upper().startswith('CR0')]
+        if nombre in (carpetas if carpeta else archivos):
+            hallados.append(os.path.join(raiz, nombre))
+    return max(hallados, key=os.path.getmtime) if hallados else None
+
+
+# Si la corrida anterior se movió a una carpeta Cambios_..., se trae de vuelta
+# para retomar sin reentrenar.
+if not os.path.exists(ARCHIVO_SALIDA):
+    _prev = buscar('04f_arquitecturas.csv')
+    if _prev:
+        shutil.copy2(_prev, ARCHIVO_SALIDA)
+        _err_prev = os.path.join(os.path.dirname(_prev), '04f_errores')
+        if os.path.isdir(_err_prev):
+            shutil.copytree(_err_prev, CARPETA_ERRORES, dirs_exist_ok=True)
+        print(f'Corrida anterior encontrada en {os.path.dirname(_prev)}: se retoma desde ahí.')
 os.makedirs(CARPETA_ERRORES, exist_ok=True)
 
 
@@ -170,8 +207,9 @@ media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
 
 
 def construir(conjunto, stride):
-    """Ventanas del conjunto, con su tramo, su posición y si tienen alarma."""
-    X, alarma, tramo, pos = [], [], [], []
+    """Ventanas del conjunto, con su tramo, su posición, si tienen alarma y la
+    hora en que empiezan (para cruzarlas con el nivel del paso 10)."""
+    X, alarma, tramo, pos, inicio = [], [], [], [], []
     for k, (t, m, c) in enumerate(zip(tramos, mascaras, conjunto_tramo)):
         if c != conjunto:
             continue
@@ -181,12 +219,14 @@ def construir(conjunto, stride):
             alarma.append(bool(m[i:i + W].any()))
             tramo.append(k)
             pos.append(j)
-    return (np.stack(X), np.array(alarma), np.array(tramo), np.array(pos))
+            inicio.append(t.index[i])
+    return (np.stack(X), np.array(alarma), np.array(tramo), np.array(pos),
+            pd.DatetimeIndex(inicio))
 
 
-X_tr, al_tr, _, _ = construir('train', STRIDE_TRAIN)
-X_va, al_va, tr_va, po_va = construir('val', STRIDE_EVAL)
-X_te, al_te, tr_te, po_te = construir('test', STRIDE_EVAL)
+X_tr, al_tr, _, _, _ = construir('train', STRIDE_TRAIN)
+X_va, al_va, tr_va, po_va, ts_va = construir('val', STRIDE_EVAL)
+X_te, al_te, tr_te, po_te, ts_te = construir('test', STRIDE_EVAL)
 X_tr_n = X_tr[~al_tr]
 X_va_n = X_va[~al_va]
 print(f'Entrenamiento: {len(X_tr):,} ventanas, {len(X_tr_n):,} normales')
@@ -514,3 +554,97 @@ resumen.to_csv(ARCHIVO_RESUMEN, sep=';', decimal=',', encoding='utf-8-sig')
 print('\nSi ninguna red tiene DIFERENCIA CLARA a favor, se mantiene el Transformer.')
 print('La prueba y la anticipación (dif_test, dif_anticipacion y sus IC) solo se informan: no cambian la selección.')
 print(f'\nGuardado: {ARCHIVO_SALIDA}, {ARCHIVO_RESUMEN} y la carpeta {CARPETA_ERRORES}')
+
+
+# =============================================================================
+# 6. ¿EL ERROR DE CADA RED RECONOCE EL NIVEL (LEVE, MEDIO, GRAVE)?
+# =============================================================================
+# Ninguna de estas redes entrega un nivel: todas se entrenan solo con ventanas
+# normales y dan UN número, el error de reconstrucción. Lo que se puede medir
+# es si ese número ORDENA los niveles del paso 05 (N con pesos 9/3/1 y cortes
+# de K-means, archivo 10_nivel_ventanas.csv del paso 10) y cuánto acierta el
+# nivel si se le ponen cortes:
+#   veces_*      error mediano de cada nivel / el de las ventanas con N = 0
+#                (validación; es la tabla del paso 10 para cada red)
+#   spearman     correlación de rangos entre el error y el nivel 0-1-2-3
+#   auc_leve_media, auc_media_grave
+#                ¿el error separa niveles VECINOS? (0,5 = no los distingue)
+#   f1_macro     regresión logística sobre log(error), entrenada con las
+#                ventanas de validación con N > 0 y medida en las de prueba;
+#                se compara con un azar estratificado (el mismo esquema que
+#                el XGBoost del paso 10, pero con un solo número)
+# Todo es descriptivo: no cambia la selección de la sección 5.
+# =============================================================================
+print('\n' + '=' * 72)
+print('6. ¿EL ERROR DE CADA RED RECONOCE EL NIVEL?')
+print('=' * 72)
+ruta_nivel = buscar('10_nivel_ventanas.csv')
+if ruta_nivel is None:
+    print('No encontré 10_nivel_ventanas.csv (paso 10): se salta esta sección.')
+else:
+    print(f'Nivel de cada ventana: {ruta_nivel}')
+    _nv = pd.read_csv(ruta_nivel, usecols=['timestamp_inicio', BANDA], parse_dates=['timestamp_inicio'])
+    _mapa = _nv.drop_duplicates('timestamp_inicio').set_index('timestamp_inicio')[BANDA]
+    b_va = ts_va.map(_mapa).to_numpy(dtype=object)
+    b_te = ts_te.map(_mapa).to_numpy(dtype=object)
+    for _n, _b, _a in [('validación', b_va, al_va), ('prueba', b_te, al_te)]:
+        _ok = pd.notna(_b)
+        _coinc = ((_b[_ok] != '0_normal') == _a[_ok]).mean()
+        print(f'  {_n}: {_ok.mean():.1%} de las ventanas con nivel; la alarma de este paso '
+              f'coincide con N > 0 en el {_coinc:.1%}')
+    if pd.notna(b_va).mean() < 0.9:
+        print('  OJO: menos del 90 % de las ventanas cruzó con el paso 10. Revisa que el')
+        print('  10_nivel_ventanas.csv sea del mismo limpio y del mismo corte.')
+    COD = {'0_normal': 0, '1_leve': 1, '2_media': 2, '3_grave': 3}
+    m_va3, m_te3 = np.isin(b_va, NIVELES), np.isin(b_te, NIVELES)
+    _n_va = pd.Series(b_va[m_va3]).value_counts().reindex(NIVELES).fillna(0)
+    _n_te = pd.Series(b_te[m_te3]).value_counts().reindex(NIVELES).fillna(0)
+    print(f'  ventanas por nivel, validación: { {k: int(v) for k, v in _n_va.items()} }')
+    print(f'  ventanas por nivel, prueba    : { {k: int(v) for k, v in _n_te.items()} }')
+    hay_f1 = (_n_va >= MIN_CLASE).all() and (_n_te >= MIN_CLASE).all()
+    if not hay_f1:
+        print(f'  Algún nivel tiene menos de {MIN_CLASE} ventanas: no se calcula el F1.')
+
+    def metricas_nivel(e_va, e_te):
+        f = {}
+        ok = pd.notna(b_va)
+        med = pd.Series(e_va[ok]).groupby(b_va[ok]).median()
+        for k in NIVELES:
+            f[f'veces_{k}'] = med.get(k, np.nan) / med.get('0_normal', np.nan)
+        f['spearman'] = spearmanr(e_va[ok], pd.Series(b_va[ok]).map(COD)).correlation
+        for a, b in [('1_leve', '2_media'), ('2_media', '3_grave')]:
+            m = np.isin(b_va, [a, b])
+            f[f'auc_{a[2:]}_{b[2:]}'] = auc(e_va[m], b_va[m] == b)
+        if hay_f1:
+            lr = LogisticRegression(class_weight='balanced', max_iter=1000)
+            lr.fit(np.log(e_va[m_va3] + 1e-12).reshape(-1, 1), b_va[m_va3].astype(str))
+            p = lr.predict(np.log(e_te[m_te3] + 1e-12).reshape(-1, 1))
+            f['f1_macro'] = f1_score(b_te[m_te3].astype(str), p, average='macro')
+            f['bal_acc'] = balanced_accuracy_score(b_te[m_te3].astype(str), p)
+        return f
+
+    filas_nv = []
+    for _, fila in hechas.iterrows():
+        z = np.load(f'{CARPETA_ERRORES}/{fila.red}_{int(fila.semilla)}.npz')
+        filas_nv.append(dict(red=fila.red, semilla=int(fila.semilla), **metricas_nivel(z['e_va'], z['e_te'])))
+    niveles = (pd.DataFrame(filas_nv).groupby('red').mean(numeric_only=True)
+               .drop(columns='semilla').reindex([r for r in REDES + ['pca'] if r in set(hechas.red)]))
+    if hay_f1:
+        _y_tr, _y_te = b_va[m_va3].astype(str), b_te[m_te3].astype(str)
+        _dc = DummyClassifier(strategy='stratified', random_state=42).fit(np.zeros((len(_y_tr), 1)), _y_tr)
+        _p = _dc.predict(np.zeros((len(_y_te), 1)))
+        niveles.loc['azar_estratificado', ['f1_macro', 'bal_acc']] = [
+            f1_score(_y_te, _p, average='macro'), balanced_accuracy_score(_y_te, _p)]
+    niveles = niveles.round(3)
+    print('\nPromedio de las semillas (veces, Spearman y AUC en validación; F1 en prueba):')
+    print(niveles.to_string())
+    _xgb = buscar('10_xgb.csv')
+    if _xgb:
+        print('\nComo referencia, el XGBoost del paso 10 (42 variables de la señal, no un solo número):')
+        print(pd.read_csv(_xgb).to_string(index=False))
+    niveles.to_csv(f'{RUTA_EQ}/04f_niveles.csv', sep=';', decimal=',', encoding='utf-8-sig')
+    print('\nCómo leerlo: si las veces suben de nivel en nivel, el error ORDENA la gravedad.')
+    print('Si auc_leve_media o auc_media_grave están cerca de 0,5, ese par de niveles')
+    print('vecinos no se distingue con el error. Si el F1 macro apenas supera al azar,')
+    print('el error no basta para decir si una ventana es leve, media o grave.')
+    print(f'Guardado: {RUTA_EQ}/04f_niveles.csv')
