@@ -3,42 +3,7 @@
 =============================================================================
 PASO 09 — DETECTOR HÍBRIDO: AUTOENCODER + NIVEL (z_medias)
 =============================================================================
-Entradas: {EQUIPO}_ventanas_W60.csv, {EQUIPO}_features_W60.csv,
-          {EQUIPO}_error_reconstruccion_W60.csv, {EQUIPO}_corte_split.json
-          (las mismas del paso 06). No entrena nada: corre en CPU.
 Salida:   09_hibrido.csv (una fila por detector) y 09_por_regla.csv
-
------------------------------------------------------------------------------
-POR QUÉ ESTE PASO (medido antes de decidir)
------------------------------------------------------------------------------
-El desglose de la AUC de detección en prueba por regla dominante mostró que
-el autoencoder separa muy bien las anomalías de forma o de relación entre
-sensores (D, O, A17, A13, C: AUC 0,85-0,99), y mal tres reglas que son un
-cruce marginal de NIVEL de una sola variable: A y A4 (corriente CM > 100) y
-E (presión PEL < 150). En CR009 la regla E incluso tiene MENOS error que lo
-normal (AUC 0,32). Sin esas tres, la AUC del autoencoder es 0,91 / 0,93 /
-0,91 en CR009 / CR010 / CR011: el modelo es consistente entre equipos; lo
-que cambia es cuánto pesan esas reglas de nivel (57-62 % de las anomalías).
-
-Un cruce marginal de nivel es una desviación chica en el espacio de los
-sensores, y el autoencoder la reconstruye bien: no es su trabajo. Es
-justamente lo que capta z_medias. La propuesta es combinar los dos puntajes,
-cada uno en la escala de "qué tan raro es frente a lo normal":
-
-    p_AE(x) = fracción de las ventanas QUIETAS de VALIDACIÓN con error <= x
-    p_z(x)  = lo mismo con z_medias
-    H_max   = max(p_AE, p_z)              sin parámetros: no supervisado
-    H_prom  = a * p_AE + (1 - a) * p_z    a elegido en VALIDACIÓN
-
-H_max es el que se defiende: no usa etiquetas para nada. H_prom se reporta
-al lado para mostrar cuánto se gana eligiendo el peso con las reglas de
-validación. Prueba se mira una sola vez, al final.
-
-Se probaron y DESCARTARON (medido con los archivos del paso 05):
-  - suavizar el error en el tiempo (EWMA dentro del tramo): baja la AUC en
-    los tres equipos (CR010 0,836 -> 0,79 con a = 0,7), porque las alarmas
-    duran poco y el suavizado las diluye.
-=============================================================================
 """
 import os
 import sys

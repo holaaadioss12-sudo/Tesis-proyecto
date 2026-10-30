@@ -3,65 +3,12 @@
 =============================================================================
 PASO 04c — BARRIDO DE HIPERPARÁMETROS
 =============================================================================
-Lo pidió el profesor en la reunión:
-
-  "lo que autoencoder, como son redes neuronales, juega bien modificando la
-   tasa de aprendizaje, es un valor que se puede cambiar, y la cantidad de
-   capas también un poquito más, o la cantidad de nodos que tiene la red"
-
-Entradas: CR010_limpio.csv       (paso 01)
-          reglas_engine.py
-Salidas:  04c_barrido_hiperparametros.csv   (se escribe DESPUÉS DE CADA CORRIDA)
-          04c_barrido.png
-
-NO toca el paso 04 ni sus checkpoints. Es un experimento aparte.
-
-CÓMO ESTÁ DISEÑADO EL BARRIDO, Y POR QUÉ
-----------------------------------------
-No es una grilla completa. Es "una variable a la vez" (OFAT) alrededor de la
-configuración actual. Razones:
-
-  1. Una grilla de 3 x 3 x 3 son 27 corridas. Con el límite de GPU de Colab
-     eso no se termina. OFAT son 7 corridas y responde la pregunta que importa:
-     ¿mejora si muevo ESTO?
-  2. Es lo que se puede explicar y defender en una memoria. "Partí de la
-     configuración base y moví un parámetro a la vez" es una frase clara.
-  3. Si alguna variable muestra una mejora grande, después se puede refinar
-     solo en esa dirección.
-
-La métrica para elegir NO es la pérdida de validación: es la SEPARACIÓN entre
-el error de las ventanas anómalas y el de las normales. Es la misma lógica por
-la que el paso 04 guarda dos checkpoints: el objetivo del sistema es detectar,
-no reconstruir.
-
-SOBRE "MÁS CAPAS / MÁS NODOS"
------------------------------
-Subir d_model de 64 a 128 multiplica los parámetros por algo más de 3. Con
-~18.700 ventanas normales de entrenamiento, la relación datos/parámetros baja
-de ~116 a 1 hasta ~30 a 1. Puede mejorar o puede sobreajustar; por eso el
-script reporta también la brecha entre entrenamiento y validación, que es
-donde el sobreajuste se ve. Si esa brecha se abre, más capacidad es peor
-aunque la pérdida baje.
-
-EL SCRIPT GUARDA DESPUÉS DE CADA CORRIDA
-----------------------------------------
-Si Colab se corta a mitad de camino, no se pierde lo hecho: basta volver a
-correrlo y las configuraciones ya evaluadas se saltan solas.
-=============================================================================
 """
 
 from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
-# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
-# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
-#     import os; os.environ['EQUIPO'] = 'CR009'
-# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
-# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
-# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
-# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
-# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
@@ -95,17 +42,9 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
-# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
-# validación. Con un número fijo y corto de épocas el experimento medía qué
-# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
-# producción llegó a su mínimo recién en la época 93.
 EPOCAS_MAX = 100
 PACIENCIA = 15
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
-# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
-# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
-# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
 ARCHIVO_SALIDA = f'{RUTA_EQ}/04c_barrido_hiperparametros_v2.csv'
 ARCHIVO_FIG = f'{RUTA_EQ}/04c_barrido_v2.png'
 
@@ -145,18 +84,7 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
 # -----------------------------------------------------------------------------
-# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
-# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
-#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
-#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
-#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
-#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
-# Con el corte viejo este experimento entrenaba y validaba sobre períodos
-# distintos a los del modelo que se defiende, y sus números no se podían
-# comparar con él. Ahora las ventanas normales, el período de entrenamiento
-# y el de validación son exactamente los del paso 04.
 import json
 _corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
@@ -270,8 +198,7 @@ def error_medio(modelo, X, batch=256):
 
 
 def auc_mann_whitney(e_norm, e_anom):
-    """AUC sin sklearn: el estadístico U normalizado. Empates valen 0,5.
-    Copia literal de la del 04d."""
+    """AUC sin sklearn: el estadístico U normalizado."""
     todos = np.concatenate([e_norm, e_anom])
     rangos = pd.Series(todos).rank(method='average').to_numpy()
     r_anom = rangos[len(e_norm):].sum()
@@ -279,20 +206,7 @@ def auc_mann_whitney(e_norm, e_anom):
     return (r_anom - na * (na + 1) / 2) / (na * nn_)
 
 
-# PARCHE 3 -- QUÉ SE MIDE Y EN QUÉ ÉPOCA
 # -----------------------------------------------------------------------------
-# ANTES: cada configuración se resumía en la época de máxima SEPARACIÓN
-# (razón de medianas anómala/normal) y solo se reportaba eso. El 04d y el
-# 04e mostraron que la separación no predice la detección (rho = -0,25,
-# p = 0,52) y que el error en las ventanas normales sí (rho = -1,0). La
-# pregunta del profesor, además, es si el ERROR DE RECONSTRUCCIÓN mejora.
-# AHORA: cada configuración se resume en la época de MÍNIMA pérdida sobre
-# las normales de validación (el mismo criterio que el early stopping y que
-# el checkpoint autoencoder_W60_normales.pt), y en esa época se reporta:
-#   err_normal     mediana del error en normales de validación (la misma
-#                  cifra que el paso 05 da para val: 0,00639 en producción)
-#   auc, recall    si reconstruir mejor se traduce en detectar mejor
-#   separacion     la de antes, para poder comparar con el 04c viejo
 def entrenar_y_evaluar(cfg):
     """Entrena una configuración y devuelve sus métricas."""
     torch.manual_seed(SEED)
@@ -395,8 +309,6 @@ for cfg in CONFIGS:
 print('\n' + '=' * 72)
 print('4. RESULTADOS DEL BARRIDO')
 print('=' * 72)
-# PARCHE 3 (cont.) -- se ordena por error en normales, que es la pregunta, y
-# al lado va el AUC para ver si reconstruir mejor es también detectar mejor.
 hechas = hechas.sort_values('err_normal')
 print(hechas[['configuracion', 'parametros', 'mejor_epoca', 'err_normal',
               'auc', 'recall_al_10pct', 'separacion', 'brecha_train_val',
@@ -459,9 +371,6 @@ plt.show()
 print(f'\nGuardado: {ARCHIVO_SALIDA}')
 print(f'Guardado: {ARCHIVO_FIG}')
 print('\n' + '=' * 72)
-# PARCHE 4 -- el barrido se hizo DESPUÉS de mirar prueba, así que no puede
-# cambiar el modelo que se defiende sin contaminar esa evaluación. Se reporta
-# como análisis de sensibilidad.
 print('LISTO. El modelo de producción NO cambia: el conjunto de prueba ya se')
 print('miró, y elegir otra configuración ahora sería ajustarla a ese resultado.')
 print('Esto se reporta como análisis de sensibilidad de hiperparámetros.')

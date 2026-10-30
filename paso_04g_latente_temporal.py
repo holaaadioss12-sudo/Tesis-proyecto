@@ -3,95 +3,6 @@
 =============================================================================
 PASO 04g — AUTOENCODER TEMPORAL: LATENTE QUE CONSERVA EL TIEMPO (60 x k)
 =============================================================================
-Lo pidió el profesor en la reunión del 30-oct:
-    "Yo quiero ... que reduzca, extraiga las principales características del
-     vector de entrada, que reduzca esas catorce dimensiones a cuatro, ocho,
-     doce, y luego reconstruya y calcule los MSE, los umbrales, y vea si la
-     reconstrucción está haciéndola bien. Yo creo que eso es lo primero."
-    "Investigue bien cómo se arma el autoencoder temporal ... úsela más
-     simple ... que no se pierda la secuencia temporal. Eso es lo importante."
-    "Uno podría sacar los MSE por cada una de las variables ... y ver qué
-     variables son las que están contribuyendo a que sea anormal."
-
-QUÉ CAMBIA RESPECTO DEL PASO 04
------------------------------------------------------------------------------
-El autoencoder del paso 04 comprime COLAPSANDO EL TIEMPO: cada instante se
-proyecta de 14 a 64 (d_model) y al final del codificador se promedian los 60
-instantes (h.mean(dim=1)), así que el latente es un vector de 64 sin eje de
-tiempo. No existe un parámetro latent_dim: es d_model.
-
-Aquí el cuello de botella reduce las VARIABLES y conserva los 60 instantes:
-el latente es una matriz (60, k), con k = latent_dim < 14 explícito, y se
-barre k para elegirlo. Tres arquitecturas, las tres con latente (60, k):
-
-  transformer_t  el Transformer del paso 04 (2 + 2 capas, d_model 64,
-                 4 cabezas), pero sin el promedio: una capa lineal por
-                 instante lleva 64 -> k (cuello) y otra k -> 64 (vuelta).
-  cnn_t          el autoencoder temporal más simple: 2 convoluciones 1D por
-                 lado, paso 1 y relleno 'same' (el tiempo no se reduce):
-                 14 -> 32 -> k y k -> 32 -> 14.
-  cnn_lstm       capa convolucional 1D (patrones locales) + LSTM (memoria
-                 secuencial) + cuello por instante (60, k); el decodificador
-                 hace lo mismo al revés: k -> LSTM -> convolución -> 14.
-
-y como referencia el modelo actual:
-
-  transformer    el del paso 04, idéntico (latente de 64, colapsado).
-
-Barrido: k en LATENTES (por defecto 2, 4, 7, 8 y 12; 7 es la regla práctica
-que mencionó el profesor, la mitad de las 14 variables).
-
-PROTOCOLO (el mismo del paso 04 y del 04f, para que sea comparable)
------------------------------------------------------------------------------
-  - mismo corte por fecha (JSON del paso 01), mismas reglas tramo por tramo,
-    misma estandarización (media y desviación del entrenamiento);
-  - entrenamiento solo con ventanas normales (una cada 12 mediciones);
-  - Adam 0,001, lotes de 64, hasta 100 épocas, parada temprana con paciencia
-    15 sobre la pérdida en las normales de validación; se guarda el modelo de
-    MÍNIMA pérdida (PARCHE P8);
-  - semilla 42 para el barrido (SEMILLAS=42,7,2024 para confirmar el k
-    elegido: el script retoma y solo corre lo que falta).
-
-QUÉ SE MIDE
------------------------------------------------------------------------------
-  - la pérdida de las ventanas normales de validación contra k: la curva del
-    codo que pidió el profesor;
-  - el AUC de detección en validación (decide) y en prueba (se informa);
-  - la anticipación con la definición del paso 06 (se informa);
-  - el ERROR POR VARIABLE: ((x_rec - x)^2).mean(dim=1) da 14 errores por
-    ventana. Con ellos:
-      * umbral por variable = P95 en las ventanas sin alarma de validación;
-      * atribución: en las ventanas con alarma, ¿la variable con más error es
-        la variable de la regla que sonó? Se compara con el azar (la misma
-        prueba que se hizo con el índice W).
-
-CÓMO SE ELIGE k (en validación)
------------------------------------------------------------------------------
-  - k_codo: el menor k cuya pérdida de normales está a menos de 10 % de la
-    mejor de esa red (la curva del codo);
-  - k_auc: el k con mayor AUC de validación.
-Si no coinciden, se informan los dos. Con una sola semilla el resultado es
-indicativo: para decidir contra el Transformer actual se corre el k elegido
-con las 3 semillas y se aplica la regla del 04f (2 veces la dispersión entre
-semillas e intervalo bootstrap por tramos sin el 0).
-
-Entradas: {EQUIPO}_limpio.csv, {EQUIPO}_corte_split.json   (paso 01)
-          reglas_engine.py                                 (carpeta base)
-Salidas:  04g_latente_temporal.csv   una fila por red, k y semilla (se
-                                     escribe después de cada corrida; si
-                                     Colab se corta, se retoma)
-          04g_errores/*.npz          error por variable de cada ventana
-          04g_modelos/*.pt           pesos de cada corrida (para el
-                                     agrupamiento sobre el latente)
-          04g_codo.png               pérdida de normales y AUC contra k
-          04g_resumen.csv            mejor k por red, con IC contra el actual
-          04g_atribucion.csv         variable con más error vs regla que sonó
-          04g_variables_por_ventana.csv
-                                     las 3 variables con más error de cada
-                                     ventana con alarma (mejor k de cada red)
-Variables de entorno: EQUIPO, SEMILLAS, LATENTES, REDES, EPOCAS_MAX.
-Tiempo: 16 corridas, alrededor de 1 a 1,5 horas con GPU.
-=============================================================================
 """
 import os
 import sys
@@ -196,8 +107,6 @@ corte = json.load(open(ARCHIVO_CORTE))
 T_TRAIN, T_VAL = pd.Timestamp(corte['T_train']), pd.Timestamp(corte['T_val'])
 print(f'Corte único: T_train = {T_TRAIN} | T_val = {T_VAL}')
 
-# Reglas tramo por tramo, como el paso 04. Además de "hay alarma", se guarda
-# QUÉ reglas sonaron en cada muestra: hace falta para la atribución.
 idx = df.index.to_series()
 df['_tramo'] = (idx.diff() > pd.Timedelta('10s')).cumsum().values
 tramos, reglas_tramo, IDS = [], [], None
@@ -229,8 +138,6 @@ media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
 
 
 def construir(conjunto, stride):
-    """Ventanas del conjunto con su tramo, su posición, la hora de inicio y
-    qué reglas sonaron en ella (una columna por regla)."""
     X, reglas, tramo, pos, inicio = [], [], [], [], []
     for k, (t, rg, c) in enumerate(zip(tramos, reglas_tramo, conjunto_tramo)):
         if c != conjunto:
@@ -258,8 +165,6 @@ print(f'Prueba       : {len(X_te):,} ventanas ({int(al_te.sum()):,} con alarma)'
 
 
 def siguiente_con_alarma(alarma, tramo, pos):
-    """1 si la ventana siguiente del mismo tramo tiene alarma, 0 si no, NaN si
-    el tramo se acaba (la ventana queda censurada, como en el paso 06)."""
     s = pd.DataFrame({'a': alarma, 't': tramo, 'p': pos}).sort_values(['t', 'p'])
     sig = s.groupby('t').a.shift(-1)
     out = pd.Series(np.nan, index=s.index)
@@ -299,7 +204,7 @@ def capa_transformer(d_model=64, nhead=4, dim_ff=128, dropout=0.1):
 
 
 class AETransformer(nn.Module):
-    """REFERENCIA: idéntico al del paso 04. Latente (B, 64): colapsa el tiempo."""
+    """REFERENCIA: idéntico al del paso 04."""
     def __init__(self, n_vars, W, k=None, d_model=64, num_layers=2):
         super().__init__()
         self.W = W
@@ -359,8 +264,6 @@ class AECNNT(nn.Module):
 
 
 class AECNNLSTM(nn.Module):
-    """Convolución (patrones locales) + LSTM (memoria secuencial) + cuello por
-    instante; el decodificador hace lo mismo al revés."""
     def __init__(self, n_vars, W, k, canales=32, oculto=64, nucleo=5, dropout=0.1):
         super().__init__()
         p = nucleo // 2
@@ -406,8 +309,7 @@ for _r in [REF] + REDES:
 # 3. MÉTRICAS
 # =============================================================================
 def errores_por_variable(modelo, X, batch=256):
-    """(n, 14): error cuadrático medio de cada variable en cada ventana. El
-    error de la ventana (el del paso 04) es el promedio de estos 14."""
+    """(n, 14): error cuadrático medio de cada variable en cada ventana."""
     modelo.eval()
     out = []
     with torch.no_grad():
@@ -588,9 +490,6 @@ print(f'Gráfico: {RUTA_EQ}/04g_codo.png')
 # =============================================================================
 # 6. MEJOR k DE CADA RED CONTRA EL MODELO ACTUAL (intervalo bootstrap)
 # =============================================================================
-# Pareado por tramos, como el 04f: se remuestrean tramos completos y las dos
-# redes se evalúan sobre las mismas ventanas. El AUC de cada configuración es
-# el promedio de sus semillas.
 print('\n' + '=' * 72)
 print('6. MEJOR k (por AUC de validación) DE CADA RED CONTRA EL ACTUAL')
 print('=' * 72)
@@ -643,10 +542,6 @@ print('decidir, correr el k elegido con SEMILLAS=42,7,2024 y aplicar la regla de
 # =============================================================================
 # 7. ERROR POR VARIABLE: ¿QUÉ VARIABLES EXPLICAN QUE LA VENTANA SEA ANÓMALA?
 # =============================================================================
-# Para cada ventana con alarma se toma la variable con más error y se mira si
-# es una variable de alguna regla que sonó en esa ventana. El azar es lo que
-# acertaría si esa variable se repartiera como en las ventanas sin alarma.
-# Se mide en validación y en prueba, para el actual y el mejor k de cada red.
 print('\n' + '=' * 72)
 print('7. ERROR POR VARIABLE: ¿LA VARIABLE CON MÁS ERROR ES LA DE LA REGLA QUE SONÓ?')
 print('=' * 72)

@@ -3,123 +3,11 @@
 =============================================================================
 indice_w.py  -  el indice de Wasserstein por sensor y por ventana  (v4)
 =============================================================================
-Guardar en /content/drive/MyDrive/tesis_chancadores/ junto a reglas_engine.py.
-
-Es el aporte propio que el profesor nombro segundo -- las bandas de severidad
-por quintiles -- y el que dijo que estaba mal planteado. Lo que sigue resuelve
-los cuatro defectos de una vez.
-
-1. LA FORMULA QUE SE ESCRIBE ES LA QUE SE CALCULA
-   La memoria anterior -- Ayala Penailillo, H., "Monitoreo de condicion
-   industrial usando Deep Learning", profesor guia Mario Ramos Maldonado,
-   Concepcion, 15-05-2026 -- escribe en su ecuacion 15 la forma general de
-   Kantorovich:
-
-       Wemd(mu, v) = min_{gamma in P} integral ||x - y|| gamma(x,y) dx dy
-
-   y despues calcula, de hecho, una distancia unidimensional. Las dos son
-   correctas, pero no son la misma expresion, y la que corre el codigo es la
-   segunda.
-
-   TRES PRECISIONES, verificadas contra el texto, para no pasarse al citarlo:
-     - Su ecuacion 15 esta escrita con "min", no con "infimo", y el trabajo
-       nunca escribe "W1" ni habla de orden p.
-     - Que el calculo sea unidimensional NO lo declara el texto: se DEDUCE, de
-       que la variable comparada es un escalar por ventana (el conteo de
-       alertas). En la memoria hay que escribir "se deduce", no "declara".
-     - Usa la sigla "Wemd" sin definir el subindice. La lectura evidente es
-       Earth Mover's Distance, pero tampoco esta escrito.
-     - La portada no nombra universidad en el texto (solo el logo) y el correo
-       del autor es @ing.ucsc.cl. CONFIRMAR CON EL PROFESOR como referenciarlo
-       antes de ponerlo en la bibliografia.
-
-   En 1-D hay forma cerrada via funciones cuantil, y es la que hay que escribir
-   porque es la que se calcula:
-
-       W1(mu,nu) = integral_0^1 |F_mu^-1(q) - F_nu^-1(q)| dq
-
-   En la memoria conviene poner las dos: la general como definicion, esta como
-   lo efectivamente implementado. Eso contesta de entrada la observacion del
-   profesor de que el calculo estaba mal planteado.
-
-   Y UNA DIFERENCIA DE FONDO que no hay que esconder al citarlo. Ayala calcula
-   la distancia entre la distribucion del CONTEO DE ALERTAS de un grupo y la
-   del conjunto completo de ventanas -- una distancia entre GRUPOS DE VENTANAS,
-   para ordenar soluciones de agrupamiento. Su propia notacion es
-   max_{C in A} Wemd(C, X), con X el conjunto completo. Aca es por SENSOR y por
-   VENTANA, contra la referencia de operacion normal. No es la misma cantidad y
-   los numeros no se comparan: los suyos van de 8 a 215 "alertas por ventana",
-   los de aca son adimensionales y centrados en 0.
-
-2. LA DISTRIBUCION DE REFERENCIA QUEDA DEFINIDA
-   Para cada sensor, la referencia son los valores de ese sensor agrupando
-   todas las ventanas NORMALES del tramo de ENTRENAMIENTO de ESE chancador.
-   - Solo entrenamiento: si incluye val o test, filtra informacion.
-   - Solo normales: misma razon que para entrenar el autoencoder.
-   - Por chancador: cada equipo tiene su propio regimen normal.
-
-3. LA ESCALA ES COMPARABLE ENTRE SENSORES
-   W1 tiene las unidades de la variable: grados para T5, por ciento para CM,
-   mm/s para V1. Asi no se pueden ordenar entre si ni construir quintiles
-   comunes. Se calcula sobre valores ESTANDARIZADOS con la media y desviacion
-   del tramo de entrenamiento -- las mismas del normalizador del autoencoder
-   -- y queda adimensional: "la distribucion se corrio el equivalente a 0,8
-   desviaciones estandar".
-
-4. SE CORRIGE POR TAMANO DE MUESTRA Y AUTOCORRELACION
-   Con W = 60 se estima una distribucion con 60 puntos. La distancia empirica
-   entre una muestra de 60 puntos y la referencia NO es cero aunque las dos
-   vengan de la misma distribucion: tiene valor esperado positivo. Y a 10 s de
-   muestreo esos 60 puntos estan fuertemente autocorrelacionados, asi que el
-   tamano efectivo es bastante menor que 60.
-
-   La nula se construye con las propias ventanas normales de entrenamiento:
-   cada una ES un bloque contiguo de W muestras, asi que hereda la
-   autocorrelacion real sin necesidad de remuestrear. El indice reportado es
-
-       W_tilde = (W1 - mediana(nula)) / IQR(nula)
-
-   Cerca de 0 significa "este sensor se ve como se ve normalmente".
-
-QUE CAMBIA RESPECTO DE LA v3
------------------------------------------------------------------------------
-LAS BANDAS DE VENTANA SE CORRIGEN POR MULTIPLICIDAD.  <- el cambio de fondo
-
-La v3 define los cortes POR SENSOR y despues agrega con el MAXIMO sobre los
-14 sensores. Eso infla la banda de ventana de forma grosera: si los sensores
-fueran independientes, la probabilidad de que una ventana NORMAL tenga al
-menos un sensor sobre su propio P99 es
-
-    1 - 0,99^14 = 13,1 %
-
-o sea que la tabla declararia grave a una de cada ocho ventanas normales. Con
-el P80 es peor todavia: 1 - 0,80^14 = 95,6 %. Estan correlacionados, asi que
-los numeros reales son menores, pero el orden de magnitud no cambia y el
-resultado seria ilegible.
-
-La correccion: los cortes de la BANDA DE VENTANA salen de la distribucion nula
-del AGREGADO -- el maximo sobre sensores calculado en las ventanas normales de
-entrenamiento -- que es el estadistico que de verdad se usa para decidir. Los
-cortes por sensor se conservan intactos para el PERFIL por sensor, donde la
-multiplicidad no molesta porque se lee sensor por sensor.
-
-El metodo ajustar() imprime las dos cifras para que el efecto quede medido y no
-supuesto, y ese numero va a la memoria: es la diferencia entre un criterio
-calibrado y uno que marca el 13 % de lo normal.
-=============================================================================
 """
 
 import numpy as np
 import pandas as pd
 
-# Sub-puntos de grilla por cada escalon de la funcion cuantil de la muestra.
-# Error maximo contra scipy, medido con W = 60 y referencia de 50.000 puntos:
-#   M_SUB =   1  ->  9,1e-3     (equivale a no sub-dividir)
-#   M_SUB =   5  ->  1,1e-3
-#   M_SUB =  20  ->  2,6e-4
-#   M_SUB =  50  ->  1,5e-4     <- default, 0,002 veces el IQR de la nula
-#   M_SUB = 100  ->  8,1e-5
-# Mas alla de 100 el error se estanca en el ruido de la propia referencia.
 M_SUB = 50
 TAM_TROZO = 2000        # ventanas por trozo, para no reventar la memoria
 
@@ -140,15 +28,7 @@ def _cuantiles_referencia(valores, q):
 
 
 def _w1_lote(muestras, cuant_ref_2d, tam_trozo=TAM_TROZO):
-    """W1 de cada fila de `muestras` contra la referencia. Exacta en la muestra.
-
-    muestras      : (n, W) -- n ventanas de un mismo sensor
-    cuant_ref_2d  : (W, M_SUB) -- cuantiles de la referencia, reshape de la
-                    grilla alineada: la fila k son los sub-puntos del escalon k
-
-    La funcion cuantil de la muestra es la escalera exacta: dentro del escalon
-    k vale s[k] en todos sus M_SUB sub-puntos. Por eso basta restar.
-    """
+    """W1 de cada fila de `muestras` contra la referencia."""
     X = np.asarray(muestras, dtype=np.float64)
     n = len(X)
     out = np.empty(n, dtype=np.float64)
@@ -161,7 +41,7 @@ def _w1_lote(muestras, cuant_ref_2d, tam_trozo=TAM_TROZO):
 
 
 def _w1(muestra, cuant_ref_2d):
-    """W1 de UNA ventana y UN sensor. Igual que _w1_lote con una sola fila."""
+    """W1 de UNA ventana y UN sensor."""
     return float(_w1_lote(np.asarray(muestra)[None, :], cuant_ref_2d)[0])
 
 
@@ -183,10 +63,7 @@ class IndiceW:
 
     # --------------------------------------------------------------- ajuste
     def ajustar(self, X_train_normal, verbose=True):
-        """X_train_normal: (n_ventanas, W, n_vars) YA ESTANDARIZADO.
-
-        Son las mismas ventanas con las que se entrena el autoencoder.
-        """
+        """X_train_normal: (n_ventanas, W, n_vars) YA ESTANDARIZADO."""
         if X_train_normal.shape[1] != self.w:
             raise ValueError(f'IndiceW se construyo con w={self.w} pero las '
                              f'ventanas tienen {X_train_normal.shape[1]}. La '
@@ -207,27 +84,11 @@ class IndiceW:
             cr = _cuantiles_referencia(plano, self.q)
             self.cuant_ref[v] = cr.reshape(self.w, self.m_sub)
 
-            # la nula: cada ventana normal contra la referencia. Cada ventana
-            # es un bloque contiguo de W muestras, asi que hereda la
-            # autocorrelacion real -- por eso no hace falta un bootstrap por
-            # bloques aparte.
             d = _w1_lote(X_train_normal[:, :, i], self.cuant_ref[v])
             self.nula[v] = d
             self.med[v] = float(np.median(d))
             q75, q25 = np.percentile(d, [75, 25])
             iqr = float(q75 - q25)
-            # "or 1e-12" protegia contra el cero exacto pero no contra un IQR
-            # diminuto. Si la nula se concentra, el indice -- que divide por
-            # este numero -- se dispara sin aviso.
-            #
-            # OJO CON EL DIAGNOSTICO, porque es facil equivocarse: esto NO le
-            # pasa a las variables que n_efectivo() marca con n_ef < 1. Una
-            # variable plana DENTRO de la ventana pero que deriva ENTRE
-            # ventanas (una temperatura, el caso tipico) tiene W1 muy distinto
-            # de ventana en ventana, o sea IQR GRANDE. El caso peligroso es el
-            # otro: una variable casi constante dentro Y entre ventanas --
-            # sensor trabado, o variable muy controlada -- donde todas las
-            # ventanas se parecen y la nula se colapsa.
             if iqr <= 0 or iqr < 1e-3 * max(self.med[v], 1e-12):
                 print(f'  AVISO {v}: IQR de la nula muy chico ({iqr:.2e}) '
                       f'frente a la mediana ({self.med[v]:.4f}). Todas las '
@@ -239,8 +100,6 @@ class IndiceW:
             self.iqr[v] = iqr
 
             corr = (d - self.med[v]) / self.iqr[v]
-            # cortes POR SENSOR: solo para el perfil, donde se lee sensor por
-            # sensor y la multiplicidad no molesta.
             self.cortes[v] = np.percentile(corr, PERCENTILES)
 
             if verbose:
@@ -250,10 +109,6 @@ class IndiceW:
                       f'P99={self.cortes[v][5]:+.2f}')
 
         # --- cortes de la BANDA DE VENTANA, corregidos por multiplicidad ----
-        # Exigir el P99 a cada uno de 14 sensores por separado y despues tomar
-        # el maximo NO es un criterio al 1 %: es 1 - 0,99^14 = 13,1 % si fueran
-        # independientes. La banda de ventana se calibra sobre la nula del
-        # estadistico que de verdad se usa -- el maximo.
         nula_idx = np.stack([(self.nula[v] - self.med[v]) / self.iqr[v]
                              for v in self.variables], axis=1)
         self.nula_max = nula_idx.max(axis=1)
@@ -278,7 +133,6 @@ class IndiceW:
             print('que pasaba antes, y ese contraste va a la memoria.')
         return self
 
-    # ------------------------------------------------------------ aplicacion
     def transformar(self, X, verbose=False):
         """X: (n, W, n_vars) estandarizado -> indice corregido (n, n_vars)."""
         if X.shape[1] != self.w:
@@ -292,13 +146,8 @@ class IndiceW:
                 print(f'  {v}: listo')
         return out
 
-    # ----------------------------------------------------------------- bandas
     def bandas(self, indice):
-        """Banda ordinal POR SENSOR. 0..6 segun los percentiles de su nula.
-
-        Esto es para el PERFIL. Para la banda de la ventana usar
-        banda_de_ventana(), que corrige por multiplicidad.
-        """
+        """Banda ordinal POR SENSOR."""
         niveles = np.zeros(indice.shape, dtype=np.int8)
         for i, v in enumerate(self.variables):
             niveles[:, i] = np.digitize(indice[:, i], self.cortes[v])
@@ -311,21 +160,7 @@ class IndiceW:
         return np.digitize(indice.max(axis=1), self.cortes_agregado)
 
     def resumen_por_ventana(self, indice, timestamps=None):
-        """El perfil por sensor es la salida valiosa; el agregado es el MAXIMO.
-
-        Maximo y no promedio: la gravedad la manda el sensor peor, no el
-        conjunto. Y el sensor que alcanza ese maximo es la respuesta directa a
-        lo que pidio el profesor -- "faltaria determinar cual es el que esta
-        originando la condicion".
-
-        Es el mismo criterio que resulto mejor en la escala experta: el 02c
-        midio que criticidad_max le gana a peso_criticidad_total como
-        predictor del error. Dos escalas distintas, misma conclusion -- el
-        peor componente manda, no la suma.
-
-        OJO: 'banda_w' sale de los cortes del AGREGADO, no del maximo de las
-        bandas por sensor. Ver el encabezado del archivo.
-        """
+        """El perfil por sensor es la salida valiosa; el agregado es el MAXIMO."""
         niveles = self.bandas(indice)
         arg = indice.argmax(axis=1)
         nivel_ventana = self.banda_de_ventana(indice)
@@ -351,16 +186,7 @@ class IndiceW:
 # =============================================================================
 def validar_contra_scipy(n_pruebas=300, w=60, m_sub=M_SUB, semilla=0,
                          verbose=True):
-    """Mide la diferencia contra scipy.stats.wasserstein_distance.
-
-    Lo que importa no es el error absoluto sino el error FRENTE AL IQR DE LA
-    NULA, porque el indice se reporta dividido por ese IQR. El umbral de 0,05
-    es arbitrario pero conservador: significa que el error numerico es menor
-    que la veinteava parte de la unidad en que se reporta el indice.
-
-    Esta funcion es la que destapo que el estimador de la v1 estaba mal.
-    Dejarla y correrla: cuesta dos segundos.
-    """
+    """Mide la diferencia contra scipy.stats.wasserstein_distance."""
     from scipy.stats import wasserstein_distance
     rng = np.random.default_rng(semilla)
     ref = rng.normal(0, 1, 50_000)
@@ -396,18 +222,7 @@ def validar_contra_scipy(n_pruebas=300, w=60, m_sub=M_SUB, semilla=0,
 
 
 def validar_nula(w=60, m_sub=M_SUB, n=3000, rho=0.97, semilla=0, verbose=True):
-    """Comprueba que la correccion por la nula hace lo que dice hacer.
-
-    Genera ventanas de la MISMA distribucion que la referencia, pero con
-    autocorrelacion parecida a la real (AR(1) con rho alto, que es lo que pasa
-    a 10 s de muestreo). Sin la correccion, el W1 de esas ventanas da muy
-    distinto de cero. Con la correccion, el indice tiene que quedar centrado
-    en 0 y con IQR 1 por construccion.
-
-    Si el indice de ventanas sanas no queda centrado en 0, la nula esta mal
-    ajustada y las bandas van a marcar como anomalo lo que es ruido de
-    muestreo.
-    """
+    """Comprueba que la correccion por la nula hace lo que dice hacer."""
     rng = np.random.default_rng(semilla)
 
     def ar1(n_filas):
@@ -442,13 +257,7 @@ def validar_nula(w=60, m_sub=M_SUB, n=3000, rho=0.97, semilla=0, verbose=True):
 
 
 def validar_multiplicidad(n_vars=14, n=5000, semilla=0, verbose=True):
-    """Muestra el efecto de la multiplicidad con sensores independientes.
-
-    Es el caso extremo -- los sensores reales estan correlacionados, asi que
-    el efecto sobre tus datos va a ser menor. Pero el orden de magnitud es
-    este, y la cifra teorica 1 - 0,99^14 = 13,1 % es la que conviene citar en
-    la memoria junto a la medida.
-    """
+    """Muestra el efecto de la multiplicidad con sensores independientes."""
     rng = np.random.default_rng(semilla)
     idx = rng.normal(0, 1, (n, n_vars))
     cortes_sensor = [np.percentile(idx[:, i], PERCENTILES)
@@ -471,29 +280,3 @@ def validar_multiplicidad(n_vars=14, n=5000, semilla=0, verbose=True):
 # =============================================================================
 # Como se usa, dentro del paso 04 justo despues de construir las ventanas
 # =============================================================================
-#   from indice_w import (IndiceW, validar_contra_scipy, validar_nula,
-#                         validar_multiplicidad)
-#
-#   validar_contra_scipy()        # una sola vez, dos segundos
-#   validar_nula()                # una sola vez
-#   validar_multiplicidad()       # una sola vez, para la cifra de la memoria
-#
-#   iw = IndiceW(VARIABLES, w=W).ajustar(X_tr[n_tr])   # normales de train
-#   idx_te = iw.transformar(X_te)
-#   res = iw.resumen_por_ventana(idx_te, ts_te)
-#   res.to_csv(f'{RUTA_BASE}/indice_w_test.csv', index=False)
-#
-#   # el contraste que compensa la limitacion de la tabla de criticidad:
-#   # escala empirica (bandas del indice W) contra escala experta
-#   print(pd.crosstab(res.banda_w, ventanas_test.banda_criticidad))
-#
-# EL INDICE W Y EL ERROR DE RECONSTRUCCION: COMPLEMENTARIOS, PERO MEDILO.
-# W se calcula sobre la distribucion de valores de la ventana, asi que es
-# invariante a permutar el orden de las muestras: no ve dinamica, ve nivel y
-# dispersion. El error del autoencoder si depende del orden: ve forma.
-# PERO ese argumento se debilita en las variables lentas: si n_efectivo() da
-# menos de 2, dentro de la ventana esa variable es casi un solo punto y W ahi
-# mide NIVEL -- y el autoencoder, reconstruyendo una ventana casi plana en un
-# nivel inusual, tambien responde al nivel. La complementariedad depende de la
-# variable: medila con diagnosticos.complementariedad_w_vs_ae() y escribi el
-# argumento matizado, con el numero propio al lado.

@@ -3,68 +3,6 @@
 =============================================================================
 FASE B — CLASIFICACIÓN DE LAS VENTANAS QUE EL AUTOENCODER MARCA COMO ANÓMALAS
 =============================================================================
-Entradas: CR010_ventanas_W60.csv              (paso 02: reglas, banda_w, w_*)
-          CR010_features_W60.csv              (paso 02: 70 estadísticos)
-          CR010_error_reconstruccion_W60.csv  (paso 05: error por ventana)
-          CR010_corte_split.json              (paso 01: el corte único)
-          criticidad.py, diagnosticos.py      (misma carpeta de Drive)
-Opcionales, sólo para cotejar:
-          CR010_ventanas_criticidad_W60.csv   (paso 02b)
-          05b_criterios_umbral.csv            (paso 05b)
-
-Salidas:  B1_resultados.csv
-          B2_resultados.csv
-          B2_variable_causante.csv
-
------------------------------------------------------------------------------
-QUÉ ES LA FASE B — la definición del profesor, en dos reuniones
------------------------------------------------------------------------------
-25-sep: un Random Forest entrenado SOLO sobre las ventanas que el autoencoder
-        marca como no normales, que las clasifica en leve / media / grave según
-        la distancia de Wasserstein. El autoencoder queda como filtro.
-1-oct:  Random Forest o XGBoost sobre las anómalas, para asociarlas a un tipo
-        de falla y determinar qué variable origina la condición.
-
-Son dos clasificadores:
-  B1 — gravedad                        (banda_w, y la escala del experto)
-  B2 — tipo de falla + variable causante
-
------------------------------------------------------------------------------
-LAS DOS TRAMPAS QUE ESTE SCRIPT EXISTE PARA NO PISAR
------------------------------------------------------------------------------
-(1) banda_w es un corte DETERMINISTA sobre w_max: sale de
-    np.digitize(indice.max(axis=1), cortes_agregado) en
-    indice_w.resumen_por_ventana. Un modelo que vea w_max, w_medio, cualquier
-    w_<sensor> o las columnas de nivel predice banda_w al ~100 % y no
-    significa nada. Esas columnas están en PROHIBIDAS_B1 y un assert revienta
-    si alguna llega a una matriz de entrenamiento.
-
-(2) El componente se deriva de qué REGLA está activa, y las reglas son
-    umbrales sobre los máximos y mínimos de la ventana. Es el razonamiento del
-    PARCHE 3 del paso 03: un árbol que corta T1_max en 50 reproduce la regla K
-    exacta. Por eso B2 se entrena con SIN_EXTREMOS -- media, desviación y
-    delta, ninguna de las cuales es un cruce de umbral -- y el conjunto
-    completo se reporta al lado sólo como contraste.
-
------------------------------------------------------------------------------
-EL SPLIT DE ESTA FASE, Y POR QUÉ NO ES 70 / 15 / 15
------------------------------------------------------------------------------
-El paso 05 calcula el error de reconstrucción sólo sobre validación y prueba:
-las ventanas de entrenamiento no lo tienen, y si lo tuvieran estaría sesgado
-a la baja, porque el autoencoder las vio. Sin error no hay filtro, y sin
-filtro una ventana no puede entrar a la Fase B tal como la definió el
-profesor. Entonces:
-
-    umbral del filtro   se ajusta con las NORMALES de VALIDACIÓN
-    clasificadores B    se entrenan con las anómalas de VALIDACIÓN
-    todo lo reportado   se mide UNA vez sobre PRUEBA, que no se tocó
-
-No hay ajuste de hiperparámetros: no queda un tercer conjunto donde hacerlo
-sin tocar prueba. Las configuraciones son fijas y razonables, y van
-declaradas así.
-
-REQUIERE: scikit-learn y xgboost (vienen en Colab). Corre en CPU.
-=============================================================================
 """
 
 import os
@@ -76,21 +14,11 @@ try:
     drive.mount('/content/drive')
     RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 except ImportError:
-    # Fuera de Colab (por ejemplo, para probarlo con datos sintéticos) la
-    # carpeta se pasa por variable de entorno.
     RUTA_BASE = os.environ.get('RUTA_BASE', '.')
 
 if RUTA_BASE not in sys.path:
     sys.path.append(RUTA_BASE)
 
-# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
-# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
-#     import os; os.environ['EQUIPO'] = 'CR009'
-# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
-# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
-# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
-# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
-# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
@@ -141,41 +69,15 @@ VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
 # 0. CONSTANTES QUE DECIDEN — todas acá arriba, ninguna enterrada en el código
 # =============================================================================
 
-# QUÉ CHECKPOINT DEL AUTOENCODER HACE DE FILTRO.
-# El paso 05 guarda las dos columnas, err_AE_normales (mínima pérdida en las
-# normales de validación) y err_AE_normales_sep (máxima razón anómala/normal
-# en validación), y hoy usa la segunda. Está en discusión: el 04d midió que
-# el error en normales predice el AUC con rho = -1,000 y la separación no lo
-# predice (rho = -0,25, p = 0,52), y el 04e es el que lo decide sobre prueba.
-# Cambiar el filtro es cambiar esta línea y nada más.
-# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
-# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
-# sin mirar prueba: el criterio de máxima separación elige épocas inestables
-# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
-# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
-# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
-# etiquetas. La separación se sigue reportando al lado como comparación.
 MODELO_AE = 'AE_normales'
 
-# Criterios del umbral del filtro. Los dos que nombró el profesor, y la
-# variante robusta por MAD, que entra sólo si la asimetría del error de las
-# normales pasa de 1 (mismo criterio que el 05b).
 CRITERIO_PRINCIPAL = 'percentil 95'
 ASIMETRIA_PARA_MAD = 1.0
 
-# Una clase con menos ventanas que esto en ENTRENAMIENTO no tiene métricas que
-# signifiquen algo. En B2 se agrupa en 'otros' antes de medir nada.
 MIN_CLASE = 30
 
-# El chequeo del split. El JSON tiene que traer un corte cerca del 70 %. Ya se
-# entrenó una vez con el 18 % sin que nada avisara (ver paso 01, CORTE
-# DEFINITIVO), y la Fase B heredaría ese error entero. Si el corte está
-# desviado el script se detiene; esta constante existe sólo para poder correr
-# una prueba a sabiendas, nunca para los números de la memoria.
 PERMITIR_SPLIT_DESVIADO = False
 
-# RESTRICCIÓN 1 -- el índice W y todo lo que se deriva de él. banda_w es
-# np.digitize sobre w_max: cualquiera de estas en la entrada lo filtra.
 PROHIBIDAS_B1 = [
     'w_CM', 'w_PI', 'w_PDF', 'w_PEL', 'w_T7', 'w_T8', 'w_T9', 'w_T1', 'w_T2',
     'w_T5', 'w_V1', 'w_V2', 'w_V3', 'w_V4',
@@ -183,9 +85,6 @@ PROHIBIDAS_B1 = [
     'n_sensores_sobre_P80', 'banda_w', 'sensor_origen',
 ]
 
-# Lo que sale de las reglas o de las etiquetas tampoco puede entrar: es la
-# misma lista NO_FEATURE del paso 03, más los objetivos del paso 03 y las
-# columnas que agrega esta fase.
 NO_FEATURE = ['tramo_id', 'ventana_id', 'timestamp_inicio', 'timestamp_fin',
               'etiqueta_ventana', 'etiqueta_tfidf', 'banda_severidad',
               'total_alarmas_ventana', 'total_eventos_ventana',
@@ -195,7 +94,7 @@ ETIQUETAS_BANDA_W = ['1_leve', '2_media', '3_grave']      # 0_normal no entra
 
 
 def verificar_matriz(columnas, donde):
-    """El assert de las dos restricciones. Revienta, no avisa."""
+    """El assert de las dos restricciones."""
     columnas = list(columnas)
     fuga_w = sorted(set(columnas) & set(PROHIBIDAS_B1))
     assert not fuga_w, (f'[{donde}] columnas del índice W en la entrada: '
@@ -238,12 +137,7 @@ if _f_tr is None or abs(_f_tr - corte.get('frac_train', 0.70)) > 0.05:
 
 
 def split_df_por_fecha(d, col='timestamp_inicio', t_train=None, t_val=None):
-    """COPIA LITERAL de split_df_por_fecha del paso 02 (PARCHE 2).
-
-    No se importa porque el paso 02 es una celda de Colab, no un módulo: un
-    import ejecutaría el paso entero. Se copia sin cambios, salvo que los dos
-    instantes se pasan explícitos en vez de leerse de variables globales.
-    """
+    """COPIA LITERAL de split_df_por_fecha del paso 02 ."""
     t_train = T_TRAIN if t_train is None else t_train
     t_val = T_VAL if t_val is None else t_val
     ts = pd.to_datetime(d[col])
@@ -269,18 +163,6 @@ print(f'Reglas en el archivo de ventanas: {len(ids_reglas)}   <- esperado: 31')
 # =============================================================================
 # 2. PASO 0 — ¿LA ESCALA EXPERTA TIENE ALGO QUE CLASIFICAR?
 # =============================================================================
-# diagnosticos.degeneracion_criticidad() dice en su docstring "hay que correr
-# esto ANTES de construir la Fase B". Se corre acá, sobre la criticidad que
-# calcula criticidad.anotar_ventanas() -- la misma tabla del profesor.
-#
-# POR QUÉ NO SE LEE CR010_ventanas_criticidad_W60.csv. El 02b toma el
-# componente de la columna 'componente' de criticidad_reglas.csv, cuyos
-# valores son 'Sistema', 'Motor', 'Alimentacion/motor'..., NO la taxonomía de
-# criticidad.COMPONENTE (motor, lubricacion, estructura...). 'Sistema', en
-# particular, junta toda la lubricación bajo un nombre que no dice nada. Acá
-# la etiqueta se calcula con criticidad.COMPONENTE, y si el archivo del 02b
-# existe se coteja la criticidad contra él.
-# =============================================================================
 print('\n' + '=' * 72)
 print('2. PASO 0 — DEGENERACIÓN DE LA ESCALA EXPERTA')
 print('=' * 72)
@@ -291,12 +173,6 @@ print()
 degeneracion_criticidad(v_anot, col='criticidad_min', min_por_clase=MIN_CLASE)
 
 # --- el componente, con el desempate del 02b -----------------------------
-# anotar_ventanas() elige la regla más grave y, si empatan, la primera en el
-# orden de columnas -- que es arbitrario. Con D y A4 (las dos de criticidad 2,
-# lubricación y motor) activas en más de un tercio de las ventanas cada una,
-# ese empate decide la etiqueta de miles de ventanas. Se desempata como el
-# 02b: entre las más graves, la que tiene más muestras en alarma dentro de la
-# ventana; recién después, el orden de columnas.
 _M = ventanas[ids_reglas].to_numpy(dtype=float)
 _peso = np.array([criticidad.PESO[r] for r in ids_reglas], dtype=float)
 _activa = _M > 0
@@ -310,9 +186,6 @@ _comp_col = np.array([criticidad.COMPONENTE[r] for r in ids_reglas])
 v_anot['regla_dominante_b'] = np.where(_hay, np.array(ids_reglas)[_dom], 'ninguna')
 v_anot['componente_b'] = np.where(_hay, _comp_col[_dom], 'normal')
 
-# Cuán ambigua es la etiqueta: ventanas donde las reglas del nivel más grave
-# apuntan a más de un componente. Ahí el componente lo decide el desempate,
-# no la física, y ese porcentaje acota lo que B2 puede afirmar.
 _n_comp_top = np.array([len(set(_comp_col[fila])) for fila in _es_top])
 _ambiguas = _hay & (_n_comp_top > 1)
 print(f'\nComponente (taxonomía criticidad.COMPONENTE, desempate por muestras):')
@@ -352,9 +225,6 @@ cols_v = (LLAVES + ['timestamp_inicio', 'timestamp_fin', 'banda_w',
 cols_v = [c for c in cols_v if c in v_anot.columns]
 
 # --- las features, con la construcción del paso 03 ------------------------
-# FEATURES y FEATURES_SIN_EXTREMOS se arman con EXACTAMENTE la misma expresión
-# del paso 03 (bloques 1 y 3, PARCHE 3). No se importan por la misma razón que
-# split_df_por_fecha: el paso 03 es una celda.
 FEATURES = [c for c in features.columns if c not in NO_FEATURE]
 FEATURES_SIN_EXTREMOS = [f for f in FEATURES
                          if not f.endswith(('_max', '_min'))]
@@ -380,10 +250,6 @@ assert (d_va.conjunto == 'val').all() and (d_te.conjunto == 'test').all(), \
 print('  Coincide con la columna "conjunto" del paso 05 ventana por ventana.')
 
 # --- sin solape: stride = W ----------------------------------------------------
-# Dentro de cada tramo, ventana_id consecutivas tienen que estar exactamente a
-# W muestras una de otra, y cada ventana termina antes de que empiece la
-# siguiente. Si alguna se solapara, la misma muestra estaría en dos ventanas y
-# una podría quedar en entrenamiento y la otra en prueba.
 _o = d.sort_values(LLAVES)
 _mismo = _o.tramo_id.eq(_o.tramo_id.shift())
 _paso = (_o.timestamp_inicio - _o.timestamp_inicio.shift())[_mismo]
@@ -413,11 +279,6 @@ print('  Las listas de features pasan el assert de PROHIBIDAS_B1 y de reglas.')
 # =============================================================================
 # 4. EL FILTRO: QUÉ VENTANAS MARCA EL AUTOENCODER
 # =============================================================================
-# Los umbrales se ajustan con las ventanas NORMALES de VALIDACIÓN (sin ninguna
-# regla activa), con las fórmulas del 05b. El 05b los calcula sobre val + test
-# mezclados; acá sólo con val, para que prueba quede limpia. Si el 05b está en
-# Drive se imprime al lado para que la diferencia quede a la vista.
-# =============================================================================
 print('\n' + '=' * 72)
 print('4. EL FILTRO DEL AUTOENCODER')
 print('=' * 72)
@@ -446,11 +307,7 @@ if os.path.exists(ARCHIVO_05B):
 
 
 def graves_perdidas(dd, marcada):
-    """Cuántas de las graves NO pasan el filtro, por cada escala de gravedad.
-
-    Una grave que el filtro no marca nunca llega a la Fase B, y ese error no
-    se recupera. Todo el desempeño de B se lee condicionado a esto.
-    """
+    """Cuántas de las graves NO pasan el filtro, por cada escala de gravedad."""
     out = {}
     for nombre, es_grave in [('banda_w_3_grave', dd.banda_w == '3_grave'),
                              ('criticidad_1', dd.criticidad_min == 1),
@@ -481,16 +338,6 @@ print('\npct_perdidas_* es la fracción de las graves de cada escala que el')
 print('filtro deja afuera. Va al lado de cada métrica de B: un F1 alto sobre')
 print('lo que pasó el filtro no dice nada de lo que el filtro no dejó pasar.')
 
-# PARCHE P4 -- la elección del criterio, escrita ANTES de mirar prueba.
-# CRITERIO_PRINCIPAL venía en 'percentil 95' sin una regla que lo justifique,
-# y ningún criterio es gratis: bajar el umbral recupera graves y sube las
-# falsas alarmas. Aquí se declara una regla de operación y se aplica sobre
-# VALIDACIÓN: "el umbral más alto (menos falsas alarmas) que deje fuera menos
-# del PCT_MAX_PERDIDA_CRIT1 % de las ventanas de criticidad 1". La regla sólo
-# se IMPRIME junto a la elección vigente: cambiar CRITERIO_PRINCIPAL cambia
-# todos los resultados de B y es una decisión del autor con el profesor, no
-# del script. La asimetría del error de las normales (impresa arriba) es el
-# argumento para preferir el MAD sobre la media + 3 sigma.
 PCT_MAX_PERDIDA_CRIT1 = 5.0
 _eleccion = []
 for crit, u in UMBRALES.items():
@@ -515,12 +362,6 @@ print(f'  -> la regla elige: {CRITERIO_POR_REGLA or "ninguno (todos pierden más
 # =============================================================================
 # 5. DOS ESCALAS DE GRAVEDAD: LA EMPÍRICA Y LA DEL EXPERTO
 # =============================================================================
-# banda_w sale de los datos (Wasserstein sobre los sensores). criticidad sale
-# del juicio de una sola persona, no contrastado con operadores. El acuerdo
-# entre las dos es lo que compensa esa limitación; el desacuerdo también es un
-# resultado. comparar_escalas() de criticidad.py hace la matriz contra
-# banda_severidad; acá se agrega la que pidió el profesor, contra banda_w.
-# =============================================================================
 print('\n' + '=' * 72)
 print('5. ESCALA EMPÍRICA (banda_w) CONTRA ESCALA EXPERTA (criticidad)')
 print('=' * 72)
@@ -543,11 +384,7 @@ if len(_ambas) > 30:
 # HERRAMIENTAS COMUNES A B1 Y B2
 # =============================================================================
 def metricas(y, p, clases, orden=None):
-    """F1 macro y exactitud balanceada; para escalas ordenadas, error ordinal.
-
-    No se reporta la exactitud sola: con clases desbalanceadas, predecir
-    siempre la mayoritaria da una exactitud alta y no sabe nada.
-    """
+    """F1 macro y exactitud balanceada; para escalas ordenadas, error ordinal."""
     out = {'f1_macro': f1_score(y, p, labels=clases, average='macro',
                                 zero_division=0),
            'bal_acc': balanced_accuracy_score(y, p)}
@@ -559,14 +396,7 @@ def metricas(y, p, clases, orden=None):
 
 
 def baseline_umbral(e_tr, y_tr, e_te, orden=None):
-    """Un solo umbral sobre el error de reconstrucción, sin modelo.
-
-    Ordinal (B1): más error = más grave. Los cortes se ponen en los cuantiles
-    del error de entrenamiento que reproducen las proporciones de clase de
-    entrenamiento -- con dos clases, es un solo umbral. Nominal (B2): el error
-    se parte en tantos tramos como clases y cada tramo predice la clase más
-    frecuente que tuvo en entrenamiento.
-    """
+    """Un solo umbral sobre el error de reconstrucción, sin modelo."""
     e_tr, e_te, y_tr = np.asarray(e_tr), np.asarray(e_te), np.asarray(y_tr)
     if orden is not None:
         props = np.array([(y_tr == c).mean() for c in orden])
@@ -582,16 +412,6 @@ def baseline_umbral(e_tr, y_tr, e_te, orden=None):
 
 
 def fusionar_escasas(y_tr, orden):
-    """Junta cada clase con menos de MIN_CLASE ventanas en entrenamiento con
-    su vecina en la escala, la más poblada de las dos. Repite hasta que no
-    quede ninguna escasa o queden dos clases.
-
-    Una clase con dos ventanas de entrenamiento no se aprende, y su F1 entra
-    con el mismo peso que las otras en el F1 macro: lo hunde o lo infla por
-    azar. Se junta con la vecina -- no se borra -- para que toda ventana
-    marcada siga recibiendo una gravedad, y el nombre de la clase fusionada
-    dice qué se juntó.
-    """
     grupos = [[c] for c in orden]
     while len(grupos) > 2:
         n = [int(np.isin(y_tr, g).sum()) for g in grupos]
@@ -608,14 +428,7 @@ def fusionar_escasas(y_tr, orden):
 
 
 class XGBConEtiquetas:
-    """XGBoost que recibe y devuelve las etiquetas de texto, como el RF.
-
-    XGBoost exige etiquetas enteras 0..k-1, todas presentes en entrenamiento,
-    y no acepta class_weight. Esto codifica con las clases que SÍ están en
-    entrenamiento, pesa las muestras como class_weight='balanced' del RF, y
-    decodifica al predecir. Así correr_tarea() y permutation_importance() lo
-    usan igual que al RF, sin un caso especial para cada uno.
-    """
+    """XGBoost que recibe y devuelve las etiquetas de texto, como el RF."""
     _estimator_type = 'classifier'
 
     def __init__(self, **params):
@@ -635,7 +448,7 @@ class XGBConEtiquetas:
 
 
 def modelos():
-    """Configuraciones FIJAS. No se ajustan: no hay dónde sin tocar prueba."""
+    """Configuraciones FIJAS."""
     out = {'RF': RandomForestClassifier(n_estimators=300, min_samples_leaf=2,
                                         class_weight='balanced',
                                         random_state=SEED, n_jobs=-1)}
@@ -649,8 +462,7 @@ def modelos():
 
 def correr_tarea(tarea, criterio, X_por_conjunto, y_tr, y_te, e_tr, e_te,
                  clases, orden=None, imprimir_cm=True):
-    """Baselines + cada modelo sobre cada conjunto de features. Una fila por
-    combinación, todas medidas sobre prueba."""
+    """Baselines + cada modelo sobre cada conjunto de features."""
     filas, preds = [], {}
     base = {'n_train': len(y_tr), 'n_test': len(y_te), 'n_clases': len(clases),
             'tarea': tarea, 'criterio_umbral': criterio}
@@ -694,11 +506,7 @@ def correr_tarea(tarea, criterio, X_por_conjunto, y_tr, y_te, e_tr, e_te,
 
 
 def ic_diferencia(y, p_mod, p_base, grupos, clases, n_boot=1000):
-    """IC 95 % de F1(modelo) - F1(baseline), con bootstrap POR TRAMO.
-
-    Remuestrear ventanas sueltas subestimaría la incertidumbre: las ventanas
-    de un mismo tramo están correlacionadas. Se remuestrean tramos enteros.
-    """
+    """IC 95 % de F1(modelo) - F1(baseline), con bootstrap POR TRAMO."""
     rng = np.random.default_rng(SEED)
     y, p_mod, p_base = map(np.asarray, (y, p_mod, p_base))
     grupos = np.asarray(grupos)
@@ -716,18 +524,6 @@ def ic_diferencia(y, p_mod, p_base, grupos, clases, n_boot=1000):
 
 # =============================================================================
 # 6. B1 — GRAVEDAD
-# =============================================================================
-# Dos objetivos, entrenados por separado:
-#   banda_w        {1_leve, 2_media, 3_grave}: la distancia de Wasserstein que
-#                  pidió el profesor el 25-sep. Las 0_normal no entran.
-#   criticidad     la escala del experto. Si el paso 0 deja una clase con menos
-#                  de MIN_CLASE ventanas, se junta con la vecina y el problema
-#                  se plantea con las clases que sí existen -- en la corrida
-#                  anterior eso era binario: grave / media.
-#
-# La pregunta que sí vale: ¿se lee la gravedad desde los estadísticos crudos
-# de los sensores, sin ver el índice W? Si sí, el método es desplegable sin
-# calcular Wasserstein. Si no, también es resultado.
 # =============================================================================
 print('\n' + '=' * 72)
 print('6. B1 — GRAVEDAD')
@@ -769,9 +565,6 @@ for crit, u in UMBRALES.items():
     print(f'\n--- B1b: criticidad del experto ---')
     print(f'  marcadas sin ninguna regla activa (quedan fuera): '
           f'val {len(a_va) - len(tr):,} | test {len(a_te) - len(te):,}')
-    # 1 = más grave en la tabla; acá se ordena de menos a más grave para que
-    # el error ordinal tenga sentido. Una clase escasa se junta con su vecina
-    # -- en la corrida anterior la 3 quedaba vacía y B1b era BINARIO.
     _nom = {3: '3_leve', 2: '2_media', 1: '1_grave'}
     tr['c'], te['c'] = tr.criticidad_min.map(_nom), te.criticidad_min.map(_nom)
     print('  Reparto antes de fusionar (val / test):')
@@ -796,26 +589,7 @@ res_b1 = pd.concat(res_b1, ignore_index=True)
 
 
 # =============================================================================
-# 7. B2 — TIPO DE FALLA (componente de la tabla del profesor)
-# =============================================================================
-# La etiqueta es componente_b (bloque 2): criticidad.COMPONENTE de la regla
-# dominante. No es un proxy: es la taxonomía que entregó el profesor. Pero
-# como sale de reglas que son umbrales, B2 se entrena con SIN_EXTREMOS
-# (restricción 2) y SOLO_SENSORES va al lado sólo para mostrar cuánto se
-# apoyaría el bosque en los cruces de umbral si se lo dejara.
-#
-# Las clases con menos de MIN_CLASE ventanas en entrenamiento se juntan en
-# 'otros' ANTES de medir nada. socket_liner (I, A11) no se activa por física
-# -- T8 - T1 llega a 4,3 contra el umbral 32 -- y setting (A23) no es
-# evaluable sin ZI266, así que esas dos no van a aparecer.
-#
-# Y la misma regla vale para el grupo que resulta. En la primera corrida real
-# 'otros' juntó 11 de alimentación + 3 de filtro + 3 de estructura: 17
-# ventanas de entrenamiento, bajo el mínimo que el propio script declara, y
-# aun así entraba al F1 macro con el mismo peso que lubricación (1.578). Si
-# 'otros' -- o cualquier clase -- queda bajo MIN_CLASE después de agrupar, sus
-# ventanas salen de B2 en entrenamiento Y en prueba, y se informa cuántas.
-# Lo que no se aprende no se mide.
+# 7. B2 — TIPO DE FALLA
 # =============================================================================
 print('\n' + '=' * 72)
 print('7. B2 — TIPO DE FALLA')
@@ -867,29 +641,6 @@ res_b2 = pd.concat(res_b2, ignore_index=True) if res_b2 else pd.DataFrame()
 # =============================================================================
 # 8. VARIABLE CAUSANTE — DOS RESPUESTAS INDEPENDIENTES
 # =============================================================================
-# (a) La del índice W: sensor_origen, el sensor que alcanza w_max en la
-#     ventana. El bloque 5e del paso 02 dice que esto "contesta directamente
-#     lo que pidió el profesor".
-# (b) La del modelo: importancia por PERMUTACIÓN sobre prueba, agregada por
-#     sensor sumando sus estadísticos. No feature_importances_: esa mide
-#     cuántas veces un árbol corta en la variable, y está sesgada hacia las de
-#     muchos valores distintos.
-#
-# Para que las dos sean comparables, la importancia se calcula POR CLASE:
-# cuánto cae el recall de esa clase al desordenar los estadísticos de cada
-# sensor. Así se puede preguntar, para cada tipo de falla, qué sensor
-# necesita el modelo para reconocerla, y contrastarlo con el sensor que el
-# índice W marca como origen en esas mismas ventanas.
-#
-# El modelo es el XGB sobre SIN_EXTREMOS, con el criterio principal del
-# filtro. DECISIÓN TOMADA DESPUÉS DE VER PRUEBA, y así se declara: la versión
-# anterior fijaba de antemano el RF, y en la primera corrida real el RF dio
-# F1 0,49 en B2 contra 0,74 del XGB. La importancia por permutación de un
-# modelo que acierta la mitad de las veces describe sus errores, no los
-# tipos de falla: la atribución tiene que salir del modelo que efectivamente
-# clasifica. El cambio no toca ninguna métrica de desempeño de B1 ni de B2 --
-# sólo qué modelo se interroga para atribuir. Sin xgboost se cae al RF.
-# =============================================================================
 print('\n' + '=' * 72)
 print('8. VARIABLE CAUSANTE')
 print('=' * 72)
@@ -908,11 +659,6 @@ if CRITERIO_PRINCIPAL in preds_b2:
     m_atrib = modelos()[NOMBRE_ATRIB].fit(Xtr, tr.y)
     print(f'Modelo interrogado: {NOMBRE_ATRIB} / SIN_EXTREMOS')
 
-    # Scorers escritos a mano y no con make_scorer ni con el nombre
-    # 'f1_macro': make_scorer(recall_score) hereda pos_label=1 de
-    # recall_score, y las versiones nuevas de scikit-learn lo validan contra
-    # las clases aunque average='macro' lo ignore -- con etiquetas de texto
-    # revienta. Además así sirven igual para el RF y para el XGB envuelto.
     def sc_f1(est, X, y):
         return f1_score(y, est.predict(X), labels=clases, average='macro',
                         zero_division=0)
@@ -1011,16 +757,6 @@ causante.to_csv(SALIDA_CAUSANTE, sep=';', decimal=',', index=False,
 for _f in (SALIDA_B1, SALIDA_B2, SALIDA_CAUSANTE):
     print(f'Guardado: {_f}')
 
-# El conjunto que va al cuerpo de la memoria. B1: sólo sensores, sin el
-# error del AE ni el índice W. B2: sin extremos, por la restricción 2. El que
-# gane por F1 se informa igual, pero el intervalo se calcula sobre éste.
-# PARCHE P3 -- B1_criticidad pasa a defenderse con SIN_EXTREMOS. La
-# criticidad de una ventana sale de qué REGLA está activa, y las reglas son
-# umbrales sobre máximos y mínimos: es la misma fuga que obligó a B2 a usar
-# SIN_EXTREMOS (un árbol que corta CM_max en 100 reproduce la regla A). Con
-# SOLO_SENSORES el F1 de B1b quedaba inflado por eso. banda_w no sale de las
-# reglas sino del índice W, cuyas columnas ya bloquea PROHIBIDAS_B1; se
-# mantiene, con la advertencia que se imprime en el resumen.
 CONJUNTO_DEFENDIDO = {'B1_banda_w': 'SOLO_SENSORES',
                       'B1_criticidad': 'SIN_EXTREMOS',
                       'B2_componente': 'SIN_EXTREMOS'}
@@ -1055,8 +791,6 @@ for tarea, tabla in [('B1_banda_w', res_b1), ('B1_criticidad', res_b1),
     print(f'  Ganó por F1: {mg.features} / {mg.modelo} con {mg.f1_macro:.4f}')
     print(f'  El que se defiende: {mm.features} / {mm.modelo} con '
           f'{mm.f1_macro:.4f}')
-    # PARCHE P3 -- cada F1 de gravedad dice de qué escala habla, con el
-    # desacuerdo entre escalas al lado: son dos problemas distintos.
     if tarea.startswith('B1'):
         _esc = ('banda_w (empírica, índice W)' if tarea == 'B1_banda_w'
                 else 'criticidad (experta, de las reglas)')
@@ -1078,9 +812,6 @@ for tarea, tabla in [('B1_banda_w', res_b1), ('B1_criticidad', res_b1),
                            p[('-', mb.modelo)], te.tramo_id, clases)
     print(f'  IC 95 % de esa diferencia (bootstrap por tramo): '
           f'[{lo:+.4f}, {hi:+.4f}]')
-    # PARCHE P3b -- faltaba el tercer caso: con el intervalo entero bajo cero
-    # (CR009, B1_criticidad: [-0,091; -0,002]) decía "incluye el cero", y es
-    # la BASE la que le gana al modelo.
     print('  -> ' + ('le gana CLARAMENTE: el intervalo no toca el cero.'
                      if lo > 0 else
                      'la BASE le gana al modelo: el intervalo está entero bajo '

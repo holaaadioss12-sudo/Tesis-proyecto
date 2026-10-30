@@ -3,41 +3,7 @@
 =============================================================================
 PASO 10d — ¿LA GRAVEDAD FORMA GRUPOS DENTRO DE UN MISMO TIPO DE ALARMA?
 =============================================================================
-El paso 10b mostró que el latente del autoencoder no se agrupa por gravedad
-(ARI en prueba <= 0,09) y que los grupos que sí aparecen se parecen más a la
-regla dominante que a la banda (NMI_tipo > NMI_banda). Queda una lectura
-posible: que el tipo de alarma tape a la gravedad. Si una ventana de
-lubricación y una mecánica están lejos en el latente, el agrupamiento corta
-primero por tipo y la gravedad, que es una diferencia más chica, no alcanza a
-formar grupos propios.
-
-La prueba es fijar el tipo y mirar sólo dentro de él:
-  1. Toma el latente que guardó el paso 10b (no corre el modelo de nuevo) y
-     las mismas ventanas marcadas: error > P95 de validación sin alarma.
-  2. Asigna a cada ventana el tipo de su regla dominante (etiqueta TF·IDF)
-     según la columna 'Tipo' de la planilla de criticidad (Hoja1):
-     operacional, lubricación o mecánica.
-  3. Dentro de cada tipo, y también dentro de cada regla dominante frecuente
-     (el control más estricto), con las bandas que tengan al menos MIN_CLASE
-     ventanas en validación:
-        - normaliza y reduce (PCA) con las ventanas de validación de ese
-          grupo, para que la varianza entre tipos ya no mande;
-        - silueta de las bandas REALES: ¿las bandas están separadas?
-          (escala de Kaufman y Rousseeuw: <= 0,25 sin estructura);
-        - K-means con tantos grupos como bandas, K-means con el k de mejor
-          silueta en validación (2..6) y GMM: ARI y NMI con las bandas;
-        - K-means sembrado con los centros reales (diagnóstico);
-        - sonda supervisada (regresión logística) contra el azar
-          estratificado: ¿la gravedad está aunque no forme grupos?
-     Todo se ajusta en validación; la prueba sólo se informa.
-  4. Una figura por tipo: el latente de prueba coloreado por banda.
-
-Entradas: 10b_latente.npz                                  (paso 10b)
-          {EQUIPO}_error_reconstruccion_W60.csv            (paso 05)
-          10_nivel_ventanas.csv                            (paso 10)
 Salidas:  10d_por_tipo.csv, 10d_por_tipo.png
-Corre en segundos.
-=============================================================================
 """
 import os
 
@@ -75,9 +41,9 @@ from sklearn.metrics import (adjusted_rand_score, normalized_mutual_info_score,
 SEED = 42
 W = 60
 LLAVES = ['tramo_id', 'ventana_id']
-AE = 'err_AE_normales'          # checkpoint de mínima pérdida (PARCHE P8)
+AE = 'err_AE_normales'          # Checkpoint de mínima pérdida
 PERCENTIL_UMBRAL = 95
-BANDA = 'banda_N_empinada_natural'   # PARCHE P14: la escala principal del paso 10
+BANDA = 'banda_N_empinada_natural'   # La escala principal del paso 10
 NIVELES = ['1_leve', '2_media', '3_grave']
 K_RANGO = range(2, 7)
 PCA_VARIANZA, PCA_MAX = 0.80, 10
@@ -85,9 +51,6 @@ MAX_SILUETA = 5000
 MIN_CLASE = 10                  # ventanas mínimas por banda en validación
 MAX_REGLAS = 6                  # reglas dominantes que se prueban por separado
 
-# Columna 'Tipo' de la planilla de criticidad (criticidadCH8.xlsx, Hoja1).
-# A6 aparece también en la combinación operacional 'A + A6'; sola es mecánica
-# (eje principal). A23 (setting) no se puede evaluar con las variables que hay.
 TIPO_REGLA = {
     **dict.fromkeys(['A', 'A1', 'A4', 'B', 'A3', 'A23'], 'operacional'),
     **dict.fromkeys(['C', 'D', 'E', 'A5', 'A8', 'A9', 'A10', 'K', 'A14',
@@ -98,9 +61,6 @@ TIPO_REGLA = {
 TIPOS = ['operacional', 'lubricacion', 'mecanica']
 
 def buscar(nombre):
-    """La copia más reciente del archivo en la carpeta del equipo o en sus
-    subcarpetas (las salidas se van moviendo a carpetas Cambios_...). Nunca
-    entra a la carpeta de otro equipo."""
     hallados = []
     for raiz, carpetas, archivos in os.walk(RUTA_EQ):
         carpetas[:] = [c for c in carpetas if not c.upper().startswith('CR0')]
@@ -279,8 +239,6 @@ probar('todos', 'todos los tipos', base_va & _con_tipo, base_te & _con_tipo)
 for t in TIPOS:
     _g = (d.tipo == t).to_numpy()
     probar('tipo', t, base_va & _g, base_te & _g)
-# Control más estricto: una sola regla dominante. Se eligen en validación las
-# reglas con al menos dos bandas que lleguen a MIN_CLASE ventanas.
 _r = d[base_va].groupby('etiqueta_tfidf')[BANDA].value_counts().unstack(fill_value=0)
 _r = _r.reindex(columns=NIVELES, fill_value=0)
 _reglas = _r[(_r >= MIN_CLASE).sum(axis=1) >= 2].sum(axis=1)

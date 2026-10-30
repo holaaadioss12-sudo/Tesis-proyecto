@@ -3,35 +3,7 @@
 =============================================================================
 PASO 07 — FIGURAS PARA LA MEMORIA
 =============================================================================
-No entrena nada ni cambia ningún resultado: lee los CSV que ya produjeron
-los pasos 04, 05, 06 y 04c, y dibuja las figuras de la memoria con los mismos
-números. Corre en CPU en un par de minutos.
-
-Entradas (todas en la carpeta del equipo; CR010 = carpeta raíz):
-    {EQUIPO}_error_reconstruccion_W60.csv   paso 05
-    {EQUIPO}_ventanas_W60.csv               paso 02
-    {EQUIPO}_features_W60.csv               paso 02 (para la línea base)
-    {EQUIPO}_corte_split.json               paso 01
-    04b_comparacion_epocas.csv              paso 04   (opcional)
-    06_episodios.csv                        paso 06   (opcional)
-    04c_barrido_hiperparametros_v2.csv      paso 04c  (opcional)
-
 Salida: carpeta figuras/ dentro de la carpeta del equipo, un PNG por figura
-(200 dpi), con el número de figura en el nombre. Si falta una entrada
-opcional, esa figura se salta y se avisa; el resto se dibuja igual.
-
-Las figuras:
-  F01  curva de entrenamiento: pérdida en train y en normales de validación,
-       y el AUC de validación, por época
-  F02  distribución del error de reconstrucción, normales contra anómalas,
-       en validación y en prueba
-  F03  curvas ROC en prueba: los dos autoencoders contra las líneas base
-  F04  el error de las ventanas normales en el tiempo: la deriva
-  F05  el error por banda de severidad (conteo de reglas) y por banda W
-  F06  tres episodios reales: el error subiendo antes de la alarma
-  F07  distribución del adelanto de los avisos
-  F08  sensibilidad de hiperparámetros (04c): error en normales contra AUC
-=============================================================================
 """
 
 import os
@@ -48,7 +20,6 @@ except ImportError:
 if RUTA_BASE not in sys.path:
     sys.path.append(RUTA_BASE)
 
-# Mismo criterio que el PARCHE EQUIPO del resto del pipeline.
 EQUIPO = os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
 RUTA_FIG = f'{RUTA_EQ}/figuras'
@@ -65,13 +36,6 @@ from sklearn.metrics import roc_curve, roc_auc_score
 
 W = 60
 MINUTOS_VENTANA = 10
-# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
-# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
-# sin mirar prueba: el criterio de máxima separación elige épocas inestables
-# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
-# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
-# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
-# etiquetas. La separación se sigue reportando al lado como comparación.
 MODELO_AE = 'AE_normales'            # el principal, como en Fase B y paso 06
 PERCENTIL_UMBRAL = 95                # el umbral de los pasos B y 06
 
@@ -86,9 +50,6 @@ ARCHIVO_04C = f'{RUTA_EQ}/04c_barrido_hiperparametros_v2.csv'
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
-# Estilo sobrio, legible impreso en blanco y negro: un color de acento para
-# lo que importa (el autoencoder principal, las anómalas) y grises para el
-# resto.
 AZUL, NARANJO, GRIS, GRIS_OSC = '#1f5fa8', '#d1642a', '#9a9a9a', '#4a4a4a'
 plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 200, 'font.size': 10,
                      'axes.spines.top': False, 'axes.spines.right': False,
@@ -127,8 +88,6 @@ d['alarma'] = d.n_reglas_activas > 0
 col_ae = f'err_{MODELO_AE}'
 cols_err = [c for c in d.columns if c.startswith('err_')]
 
-# z_medias: la línea base del paso 06, calculada igual (medias de ventana
-# estandarizadas con las quietas de validación, máximo |z| sobre los 14).
 try:
     medias = [f'{v}_media' for v in VARIABLES]
     feat = pd.read_csv(ARCHIVO_FEATURES, usecols=LLAVES + medias)

@@ -3,48 +3,6 @@
 =============================================================================
 diagnosticos.py  (v2)  -  las mediciones que deciden antes de programar
 =============================================================================
-Cada una contesta una pregunta que hoy se esta respondiendo por default. Todas
-son baratas y todas pueden cambiar decisiones de diseno.
-
-  1. distribucion_tramos()         cuanto cuesta de verdad el margen de guarda
-  2. tiempo_establecimiento()      cuanto deberia valer tau, medido
-  3. n_efectivo()                  que esta midiendo el indice W en cada variable
-  4. degeneracion_criticidad()     si la Fase B tiene algo que clasificar
-  5. complementariedad_w_vs_ae()   si el indice W aporta algo que el AE no ve
-
-QUE CAMBIA EN LA v2
------------------------------------------------------------------------------
-A. tiempo_establecimiento() ya no es O(n x n_tramos).
-   La v1 hacia `np.flatnonzero((bloque == b).to_numpy())` DENTRO del bucle de
-   tramos: con 1,18 M filas y 1.929 tramos son ~2,3e9 comparaciones solo para
-   marcar el regimen, y eso en Colab no termina. Ahora el regimen se marca
-   vectorizado con el largo de bloque mapeado por fila: una pasada, O(n).
-
-B. La banda de tolerancia se escala con el TRANSITORIO, no con el ruido.
-   La v1 usaba k_banda * IQR_regimen. El IQR del regimen mide cuanto fluctua
-   el sensor cuando ya esta estable -- no tiene nada que ver con el tamano del
-   escalon de arranque. Resultado: tau salia 12 min donde el transitorio real
-   era de ~71. Ahora la banda es una fraccion del ESCALON medido (|valor al
-   arrancar - valor de regimen|): eso es t90 y t95, que es como se define un
-   tiempo de establecimiento en control de procesos y como se puede citar.
-   El tau viejo se sigue reportando en la columna tau_iqr, para que el
-   contraste quede visible.
-
-C. Una variable cuyo escalon es mas chico que su propio ruido no tiene
-   transitorio que esperar. Antes se le calculaba un tau igual y empujaba el
-   maximo. Ahora se marca sin_transitorio y se excluye de la decision: por eso
-   el paso 3 del orden de ejecucion dice "el t95 de la variable de escalon mas
-   grande", no "el maximo de los t95".
-
-D. distribucion_tramos() agrega tramos_muertos. El costo de la guarda no es
-   proporcional: un tau grande no solo le corta la cabeza a cada tramo, MATA
-   enteros los que miden menos que tau + W. Esa es la columna que decide, con
-   pct_ventanas -- no pct_filas, que subestima el dano.
-
-E. complementariedad_w_vs_ae(), nueva. El indice W y el error del autoencoder
-   pueden estar detectando exactamente las mismas ventanas, y en ese caso el
-   indice es un adorno caro. Esto lo mide antes de escribir el capitulo.
-=============================================================================
 """
 
 import numpy as np
@@ -57,18 +15,7 @@ PASO_S = 10
 # 1. ¿Cuanto cuesta el margen de guarda? La respuesta esta en los largos
 # =============================================================================
 def distribucion_tramos(df, W=60, guardas_min=(0, 5, 15, 30, 45, 60, 90)):
-    """Lo primero que hay que mirar, antes de elegir tau.
-
-    Con ~1,18 M filas a 10 s y ~1.929 tramos, el tramo promedio dura 1,7 h.
-    Un margen de 60 min por arranque se come buena parte del material. Si la
-    mediana de tramo sale en 40 min y tau sale 90, ya sabes la respuesta antes
-    de leer el resto de la tabla.
-
-    LA COLUMNA QUE DECIDE ES ventanas, NO filas. Un tau grande no solo le corta
-    la cabeza a cada tramo: mata entero cualquier tramo mas corto que tau + W,
-    y esa perdida es abrupta, no proporcional. pct_filas la suaviza y hace
-    parecer barato un margen que en ventanas es carisimo.
-    """
+    """Lo primero que hay que mirar, antes de elegir tau."""
     salto = df.index.to_series().diff() > pd.Timedelta(seconds=PASO_S)
     tam = df.groupby(salto.cumsum()).size()
 
@@ -113,43 +60,7 @@ def distribucion_tramos(df, W=60, guardas_min=(0, 5, 15, 30, 45, 60, 90)):
 def tiempo_establecimiento(df, variables, W=60, fracciones=(0.10, 0.05),
                            k_banda=0.25, lag_max_min=360, min_tramos=20,
                            horas_regimen=6):
-    """Tau por variable y por estrato de parada previa, con criterio t90 / t95.
-
-    QUE MIDE. Para cada estrato y cada variable arma la trayectoria mediana
-    desde el instante de arranque, la compara con el nivel de regimen, y busca
-    el ultimo instante en que todavia esta fuera de una banda. Ese instante
-    + 1 es tau: desde ahi en adelante la mediana ya no sale de la banda.
-
-    LA BANDA. Fraccion del ESCALON, no del ruido. escalon = |valor al arrancar
-    - nivel de regimen|. Con fraccion 0,10 eso es t90 (llego al 90 % del
-    recorrido y se queda), con 0,05 es t95. Asi se define un tiempo de
-    establecimiento en control de procesos, se puede citar, y no depende de
-    cuanto ruido tenga el sensor. La v1 usaba k * IQR_regimen, que mide ruido y
-    no transitorio: por eso devolvia 12 min donde el transitorio era de ~71.
-    tau_iqr queda en la tabla para que el contraste se vea.
-
-    SIN TRANSITORIO. Si el escalon es mas chico que el IQR del regimen, la
-    variable arranca practicamente en su nivel normal y no hay nada que
-    esperar. Se marca sin_transitorio=True y NO entra en la decision de tau.
-    Es el caso de la variable que arranca a 0,4 C de su regimen: por lenta que
-    sea, no contamina nada.
-
-    DOS COSAS MAS, que una version simple se pierde y que cambian el resultado:
-
-    HIPOS DE ADQUISICION. Un tramo precedido por un hueco de pocos segundos no
-    empieza en un arranque: el equipo nunca se detuvo, se corto el dato. Esos
-    tramos aportan trayectorias que YA estan en regimen y sesgan tau HACIA
-    ABAJO. Se descartan con el umbral de 2 minutos.
-
-    ESTRATIFICACION. Tras 15 minutos detenido el aceite sigue caliente; tras
-    ocho horas el equipo arranca frio. Son transitorios distintos y
-    promediarlos junta dos fenomenos. De aca sale ademas la politica que mas
-    datos salva: tau condicional al estrato, en vez de pagar el tau largo
-    despues de cada parada corta.
-
-    Se usa la MEDIANA entre tramos, no el promedio, para que un arranque raro
-    no mande.
-    """
+    """Tau por variable y por estrato de parada previa, con criterio t90 / t95."""
     salto = df.index.to_series().diff() > pd.Timedelta(seconds=PASO_S)
     bloque = salto.cumsum()
     pos = df.groupby(bloque).cumcount().to_numpy()
@@ -176,9 +87,6 @@ def tiempo_establecimiento(df, variables, W=60, fracciones=(0.10, 0.05),
     lag_max = int(lag_max_min * 60 / PASO_S)
 
     # --- regimen, VECTORIZADO -------------------------------------------------
-    # v1: np.flatnonzero((bloque == b).to_numpy()) dentro del bucle de tramos.
-    # Con 1,18 M filas x 1.929 tramos son ~2,3e9 comparaciones y no termina.
-    # Aca: largo de bloque mapeado por fila, una pasada.
     largo = df.groupby(bloque).size()
     n_fila = bloque.map(largo).to_numpy()
     n_min_reg = int(horas_regimen * 3600 / PASO_S)
@@ -248,8 +156,6 @@ def tiempo_establecimiento(df, variables, W=60, fracciones=(0.10, 0.05),
                 't90_min': round(t90 * PASO_S / 60, 1),
                 't95_min': round(t95 * PASO_S / 60, 1),
                 'tau_iqr_min': round(t_iqr * PASO_S / 60, 1),
-                # saturado = la curva seguia fuera de la banda cuando se acabo
-                # el horizonte. Ese t95 no es una medicion, es un PISO.
                 'saturado': bool(t95 >= lag_max - 1),
                 'n_tramos': int(len(sel)),
             })
@@ -310,22 +216,7 @@ def tiempo_establecimiento(df, variables, W=60, fracciones=(0.10, 0.05),
 # 3. ¿Que esta midiendo el indice W? Depende de la autocorrelacion
 # =============================================================================
 def n_efectivo(X_normal, variables, W=60):
-    """Tamano efectivo de muestra dentro de una ventana, por variable.
-
-    Esto no estaba en ningun lado y cambia como se interpreta el indice W.
-
-    A 10 segundos de muestreo las temperaturas tienen rho cerca de 0,97. Para
-    un AR(1), n_ef = n(1-rho)/(1+rho). Con rho = 0,97 y n = 60 eso da MENOS DE
-    UNO: la ventana es practicamente un solo punto del proceso lento.
-
-    Consecuencia: para las variables lentas el indice W a W=60 no mide un
-    corrimiento de distribucion, mide DONDE ESTA EL NIVEL ahora mismo respecto
-    del rango normal. Es interpretable y sirve, pero hay que decirlo asi en la
-    memoria, y es el argumento para usar un W mas largo en el indice que en el
-    autoencoder.
-
-    X_normal: (n_ventanas, W, n_vars) estandarizado.
-    """
+    """Tamano efectivo de muestra dentro de una ventana, por variable."""
     filas = []
     for i, v in enumerate(variables):
         A = X_normal[:, :, i]
@@ -354,16 +245,7 @@ def n_efectivo(X_normal, variables, W=60):
 # 4. ¿Tiene la Fase B algo que clasificar?
 # =============================================================================
 def degeneracion_criticidad(ventanas, col='criticidad_min', min_por_clase=50):
-    """Hay que correr esto ANTES de construir la Fase B.
-
-    Por el anidamiento, la vibracion es la regla mas parlanchina y sus niveles
-    altos (A19 > 34, A18 > 40) son criticidad 1. Si eso arrastra casi todas las
-    ventanas anomalas a criticidad 1, la escala experta queda casi degenerada
-    sobre estos datos y no hay nada que clasificar.
-
-    Si una clase tiene una sola ventana, un R2 o una exactitud sobre ese
-    objetivo no significan nada.
-    """
+    """Hay que correr esto ANTES de construir la Fase B."""
     d = ventanas[col].value_counts().sort_index()
     print(f'Distribucion de {col} (1 = mas grave):')
     print(pd.DataFrame({'ventanas': d,
@@ -405,24 +287,7 @@ def degeneracion_criticidad(ventanas, col='criticidad_min', min_por_clase=50):
 # 5. ¿Aporta el indice W algo que el autoencoder no vea?
 # =============================================================================
 def complementariedad_w_vs_ae(idx_w, E_rel, variables, q=0.90, agregado='max'):
-    """Correla el indice W con el error relativo del AE, ventana por ventana.
-
-    POR QUE HAY QUE MEDIRLO. El indice W y el error de reconstruccion pueden
-    estar marcando exactamente las mismas ventanas por las mismas razones. Si
-    es asi, el indice es un adorno caro y la memoria tiene que decirlo; si no
-    lo es, la complementariedad es un resultado y justifica tener los dos.
-    Lo que no se puede hacer es presentar dos indicadores sin saber si son el
-    mismo indicador dos veces.
-
-    Y ADEMAS. n_efectivo() ya mostro que para las variables lentas el indice W
-    a W=60 mide NIVEL, mientras el autoencoder reconstruye FORMA dentro de la
-    ventana. Si eso es cierto, las correlaciones por variable tienen que salir
-    bajas justo en las variables de n_ef chico -- y ese cruce entre las dos
-    tablas es el argumento, no la correlacion sola.
-
-    idx_w : (n_ventanas, n_vars) indice W estandarizado, de indice_w.transformar
-    E_rel : (n_ventanas, n_vars) error de reconstruccion relativo, E / base
-    """
+    """Correla el indice W con el error relativo del AE, ventana por ventana."""
     idx_w = np.asarray(idx_w, dtype=float)
     E_rel = np.asarray(E_rel, dtype=float)
     if idx_w.shape != E_rel.shape:
@@ -506,17 +371,3 @@ def complementariedad_w_vs_ae(idx_w, E_rel, variables, q=0.90, agregado='max'):
 # =============================================================================
 # Uso
 # =============================================================================
-#   from diagnosticos import *
-#   df = pd.read_csv(ARCHIVO_LIMPIO, parse_dates=['timestamp']).set_index('timestamp')
-#
-#   distribucion_tramos(df)                      # antes de elegir la guarda
-#   tiempo_establecimiento(df, VARIABLES)        # cuanto deberia valer tau
-#   n_efectivo(X_tr[n_tr], VARIABLES)            # que mide el indice W
-#   degeneracion_criticidad(ventanas)            # si la Fase B es viable
-#
-#   # y despues del paso 04, con el indice y el error de las mismas ventanas:
-#   from indice_w import IndiceW
-#   iw   = IndiceW(VARIABLES, w=W).ajustar(X_tr[n_tr])
-#   idx  = iw.transformar(X_te)
-#   base = np.load(f'{RUTA_BASE}/04_base_por_variable.npy')
-#   complementariedad_w_vs_ae(idx, error_por_variable(ld_te) / base, VARIABLES)

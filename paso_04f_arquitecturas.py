@@ -3,69 +3,6 @@
 =============================================================================
 PASO 04f — COMPARACIÓN DE ARQUITECTURAS: ¿POR QUÉ UN TRANSFORMER?
 =============================================================================
-El objetivo específico 2 pide "evaluar y seleccionar algoritmos de Deep
-Learning". Hasta aquí se entrenó una sola arquitectura (el autoencoder
-Transformer) y se movieron sus hiperparámetros (04c, 04d, 04e). Este paso
-compara arquitecturas distintas con EXACTAMENTE el mismo protocolo:
-
-  transformer   el del paso 04: 2 + 2 capas, d_model 64, 4 cabezas
-                (Vaswani et al., 2017). 135.758 parámetros.
-  lstm          autoencoder LSTM: 2 capas que leen la ventana, el último
-                estado se proyecta a 64 números y otras 2 capas reconstruyen
-                desde ese resumen repetido en el tiempo (Malhotra et al.,
-                2016). Es la referencia clásica para series de tiempo.
-  cnn           autoencoder convolucional 1D: 3 convoluciones que reducen la
-                ventana de 60 a 15 pasos, cuello de botella lineal de 64
-                números y convoluciones transpuestas para volver. Es el tipo
-                de autoencoder que usó la tesis anterior (Ayala, 2026).
-  pca           análisis de componentes principales con 64 componentes sobre
-                la ventana aplanada (60 x 14). Es un autoencoder LINEAL: si
-                las redes no le ganan, la no linealidad no está aportando
-                (Sakurada y Yairi, 2014). No se entrena con semillas.
-
-Las tres redes tienen un presupuesto de parámetros parecido (~125 a 141 mil)
-y el mismo cuello de botella (64 números), para que la comparación sea de
-arquitectura y no de tamaño.
-
-Protocolo (el mismo del paso 04 de producción y del 04d):
-  - mismo corte por fecha (JSON del paso 01), mismas reglas tramo por tramo,
-    misma estandarización (media y desviación del entrenamiento);
-  - entrenamiento solo con ventanas normales (paso 12 entre ventanas);
-  - Adam 0,001, lotes de 64, hasta 100 épocas, parada temprana con paciencia
-    15 sobre la pérdida en las normales de validación, y se guarda el modelo
-    de MÍNIMA pérdida (PARCHE P8);
-  - 3 semillas (42, 7 y 2024) por red.
-
-Qué se mide, para cada red y semilla:
-  - AUC de detección en validación y en prueba (ventanas con alarma contra
-    ventanas sin alarma, sin traslape);
-  - anticipación con la definición del paso 06: entre las ventanas quietas de
-    prueba, AUC del puntaje para "hay alarma en la ventana siguiente" y riesgo
-    relativo a 10 minutos con el umbral P95 de las quietas de validación.
-
-Regla de decisión: la SELECCIÓN se hace con el AUC de VALIDACIÓN, promediado
-sobre semillas. Una red solo se considera mejor que el Transformer si cumple
-dos condiciones: la diferencia supera 2 veces la dispersión entre semillas
-(regla del 04d) y su intervalo bootstrap por tramos (1.000 remuestreos) no
-incluye el 0. Con solo 3 semillas la dispersión puede salir muy chica, y la
-segunda condición evita declarar ganadora a una red por las ventanas que
-tocaron en validación. La prueba se informa para todas, con el mismo
-intervalo, pero no decide nada.
-
-Entradas: {EQUIPO}_limpio.csv, {EQUIPO}_corte_split.json   (paso 01)
-          reglas_engine.py                                 (carpeta base)
-Salidas:  04f_arquitecturas.csv      una fila por red y semilla (se escribe
-                                     después de cada corrida; si Colab se
-                                     corta, al volver a correr se retoma)
-          04f_errores/*.npz          el error de cada ventana, por corrida
-          04f_resumen.csv            promedio por red, diferencias e IC
-          04f_niveles.csv            ¿el error de cada red reconoce el nivel
-                                     leve / medio / grave? (sección 6; usa
-                                     10_nivel_ventanas.csv del paso 10)
-Si las salidas de una corrida anterior se movieron a una carpeta Cambios_...
-del equipo, el script las trae de vuelta y retoma sin reentrenar.
-Tiempo: unos 30 a 60 minutos con GPU para las 9 corridas.
-=============================================================================
 """
 import os
 import sys
@@ -122,7 +59,7 @@ SEMILLAS = [int(s) for s in os.environ.get('SEMILLAS', '42,7,2024').split(',')]
 REDES = ['transformer', 'lstm', 'cnn']
 PERCENTIL_UMBRAL = 95
 N_BOOT = 1000
-BANDA = 'banda_N_empinada_natural'   # la escala principal del paso 10 (PARCHE P14)
+BANDA = 'banda_N_empinada_natural'   # La escala principal del paso 10
 NIVELES = ['1_leve', '2_media', '3_grave']
 MIN_CLASE = 10
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
@@ -139,9 +76,6 @@ for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE]:
 
 
 def buscar(nombre, carpeta=False):
-    """La copia más reciente del archivo (o carpeta) en la carpeta del equipo
-    o en sus subcarpetas (las salidas se van moviendo a carpetas Cambios_...).
-    Nunca entra a la carpeta de otro equipo. None si no está."""
     hallados = []
     for raiz, carpetas, archivos in os.walk(RUTA_EQ):
         carpetas[:] = [c for c in carpetas if not c.upper().startswith('CR0')]
@@ -150,8 +84,6 @@ def buscar(nombre, carpeta=False):
     return max(hallados, key=os.path.getmtime) if hallados else None
 
 
-# Si la corrida anterior se movió a una carpeta Cambios_..., se trae de vuelta
-# para retomar sin reentrenar.
 if not os.path.exists(ARCHIVO_SALIDA):
     _prev = buscar('04f_arquitecturas.csv')
     if _prev:
@@ -186,8 +118,6 @@ corte = json.load(open(ARCHIVO_CORTE))
 T_TRAIN, T_VAL = pd.Timestamp(corte['T_train']), pd.Timestamp(corte['T_val'])
 print(f'Corte único: T_train = {T_TRAIN} | T_val = {T_VAL}')
 
-# Reglas evaluadas tramo por tramo, como el paso 04 (una regla con ventana
-# móvil no debe "ver" a través de un hueco de datos).
 idx = df.index.to_series()
 df['_tramo'] = (idx.diff() > pd.Timedelta('10s')).cumsum().values
 tramos, mascaras = [], []
@@ -207,8 +137,6 @@ media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
 
 
 def construir(conjunto, stride):
-    """Ventanas del conjunto, con su tramo, su posición, si tienen alarma y la
-    hora en que empiezan (para cruzarlas con el nivel del paso 10)."""
     X, alarma, tramo, pos, inicio = [], [], [], [], []
     for k, (t, m, c) in enumerate(zip(tramos, mascaras, conjunto_tramo)):
         if c != conjunto:
@@ -235,8 +163,6 @@ print(f'Prueba       : {len(X_te):,} ventanas ({int(al_te.sum()):,} con alarma)'
 
 
 def siguiente_con_alarma(alarma, tramo, pos):
-    """1 si la ventana siguiente del mismo tramo tiene alarma, 0 si no, NaN si
-    el tramo se acaba (la ventana queda censurada, como en el paso 06)."""
     s = pd.DataFrame({'a': alarma, 't': tramo, 'p': pos}).sort_values(['t', 'p'])
     sig = s.groupby('t').a.shift(-1)
     out = pd.Series(np.nan, index=s.index)
@@ -481,11 +407,6 @@ resumen = resumen.reindex([r for r in REDES + ['pca'] if r in resumen.index])
 
 
 def bootstrap_contra_ref(clave, alarma, tramo, filtro=None):
-    """Intervalo del 95 % de (AUC de la red - AUC del Transformer), pareado:
-    se remuestrean tramos completos y las dos redes se evalúan sobre las
-    mismas ventanas. El AUC de cada red es el promedio de sus semillas.
-    filtro: ventanas que entran (para la anticipación, las quietas de prueba
-    que tienen ventana siguiente en el mismo tramo)."""
     if filtro is None:
         filtro = np.ones(len(alarma), dtype=bool)
     alarma, tramo = np.asarray(alarma)[filtro].astype(bool), np.asarray(tramo)[filtro]
@@ -521,11 +442,6 @@ for r in resumen.index:
 pd.set_option('display.width', 220)
 print(resumen.to_string())
 
-# Regla de decisión, solo con VALIDACIÓN. Una red le gana al Transformer si
-# cumple las dos condiciones: (1) la diferencia supera 2 veces la dispersión
-# entre semillas (regla del 04d: no es suerte de la semilla) y (2) el
-# intervalo bootstrap por tramos no incluye el 0 (no es suerte de las
-# ventanas que tocaron en validación).
 print('\n--- Selección en VALIDACIÓN ---')
 if REF in resumen.index:
     b = hechas[hechas.red == REF].auc_val
@@ -558,22 +474,6 @@ print(f'\nGuardado: {ARCHIVO_SALIDA}, {ARCHIVO_RESUMEN} y la carpeta {CARPETA_ER
 
 # =============================================================================
 # 6. ¿EL ERROR DE CADA RED RECONOCE EL NIVEL (LEVE, MEDIO, GRAVE)?
-# =============================================================================
-# Ninguna de estas redes entrega un nivel: todas se entrenan solo con ventanas
-# normales y dan UN número, el error de reconstrucción. Lo que se puede medir
-# es si ese número ORDENA los niveles del paso 05 (N con pesos 9/3/1 y cortes
-# de K-means, archivo 10_nivel_ventanas.csv del paso 10) y cuánto acierta el
-# nivel si se le ponen cortes:
-#   veces_*      error mediano de cada nivel / el de las ventanas con N = 0
-#                (validación; es la tabla del paso 10 para cada red)
-#   spearman     correlación de rangos entre el error y el nivel 0-1-2-3
-#   auc_leve_media, auc_media_grave
-#                ¿el error separa niveles VECINOS? (0,5 = no los distingue)
-#   f1_macro     regresión logística sobre log(error), entrenada con las
-#                ventanas de validación con N > 0 y medida en las de prueba;
-#                se compara con un azar estratificado (el mismo esquema que
-#                el XGBoost del paso 10, pero con un solo número)
-# Todo es descriptivo: no cambia la selección de la sección 5.
 # =============================================================================
 print('\n' + '=' * 72)
 print('6. ¿EL ERROR DE CADA RED RECONOCE EL NIVEL?')

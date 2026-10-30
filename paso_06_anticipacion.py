@@ -3,79 +3,6 @@
 =============================================================================
 PASO 06 — ¿EL AUTOENCODER AVISA ANTES QUE LAS REGLAS?
 =============================================================================
-Entradas: CR010_ventanas_W60.csv              (paso 02: reglas por ventana, w_max)
-          CR010_features_W60.csv              (paso 02: para la línea base)
-          CR010_error_reconstruccion_W60.csv  (paso 05: error por ventana)
-          CR010_corte_split.json              (paso 01)
-          criticidad.py                       (misma carpeta de Drive)
-
-Salidas:  06_precursores.csv          tasa de alarma futura, marcadas vs. no
-          06_episodios.csv            un renglón por inicio de alarma en prueba
-          06_resumen.csv              una fila por detector
-
------------------------------------------------------------------------------
-LA PREGUNTA, Y POR QUÉ HACE FALTA ESTE PASO
------------------------------------------------------------------------------
-El objetivo de la tesis dice PRONOSTICAR síntomas de falla. Lo que mostraron
-los pasos 04, 05 y la Fase B es DETECCIÓN SIMULTÁNEA: el autoencoder marca las
-ventanas en que las reglas ya están activas. Eso es necesario, pero no es
-pronóstico. Lo que se quiere demostrar es lo que el handoff llama el objetivo
-de fondo: avisar cuando el comportamiento empieza a desviarse, AUNQUE NINGÚN
-UMBRAL SE HAYA CRUZADO TODAVÍA.
-
-El material para medirlo ya existe. El filtro del autoencoder marca ventanas en
-que no hay ninguna regla activa -- en prueba, con P95, el 37 % de las
-normales -- y hasta ahora se las contaba como falsas alarmas. Este paso
-pregunta si esas "falsas alarmas" vienen ANTES de una alarma real más seguido
-de lo que vendría por azar. Si es así, no son falsas: son avisos anticipados.
-
-No entrena nada. Cruza el error de reconstrucción con los episodios de alarma.
-
------------------------------------------------------------------------------
-TRES MEDICIONES
------------------------------------------------------------------------------
-(1) PRECURSORES. Entre las ventanas SIN NINGUNA regla activa ("quietas"):
-    ¿qué fracción tiene una alarma en las próximas k ventanas del mismo tramo,
-    si el detector la marcó, contra si no la marcó? Riesgo relativo, con IC
-    por bootstrap de tramos.
-
-(2) AUC DE ANTICIPACIÓN. Sobre las mismas ventanas quietas, el puntaje del
-    detector como predictor de "hay alarma en la próxima ventana". No depende
-    de ningún umbral: 0,5 es azar.
-
-(3) TIEMPO DE ANTICIPACIÓN. Para cada inicio de un episodio de alarma, cuántas
-    ventanas quietas inmediatamente anteriores ya estaban marcadas, sin
-    interrupción. Eso, por 10 minutos, es cuánto antes avisó.
-
------------------------------------------------------------------------------
-CONTRA QUÉ SE COMPARA
------------------------------------------------------------------------------
-Que el autoencoder anticipe no basta: hay que mostrar que anticipa más que algo
-más simple. Se miden cuatro detectores, todos calibrados IGUAL -- umbral en el
-percentil 95 del puntaje sobre las ventanas quietas de VALIDACIÓN -- y todos
-evaluados sobre PRUEBA:
-
-    AE_normales_sep   el autoencoder, checkpoint por separación (el del 05)
-    AE_normales       el autoencoder, checkpoint por pérdida mínima
-    indice_W          w_max del paso 02 -- Wasserstein, sin deep learning
-    z_medias          el máximo |z| de las medias de la ventana -- lo trivial
-
-Si el autoencoder no le gana a z_medias, el deep learning no está aportando
-anticipación, y eso se reporta tal cual. Medir los dos checkpoints sirve además
-para la decisión pendiente sobre MODELO_AE (el 04e).
-
------------------------------------------------------------------------------
-LÍMITES QUE VAN DECLARADOS
------------------------------------------------------------------------------
-- Sin bitácora de mantenimiento, lo que se anticipa son ALARMAS del sistema,
-  no fallas confirmadas. Es consistente con cómo la tesis define "síntoma".
-- Los tramos duran ~1,7 h en promedio: el horizonte medible es de decenas de
-  minutos. Un aviso con horas de anticipación no se puede ver en estos datos.
-- Un episodio que ya está activo en la primera ventana de un tramo no tiene un
-  "antes" observable: queda fuera del análisis de anticipación y se cuenta.
-
-Corre en CPU, en segundos.
-=============================================================================
 """
 
 import os
@@ -92,14 +19,6 @@ except ImportError:
 if RUTA_BASE not in sys.path:
     sys.path.append(RUTA_BASE)
 
-# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
-# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
-#     import os; os.environ['EQUIPO'] = 'CR009'
-# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
-# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
-# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
-# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
-# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
@@ -127,34 +46,14 @@ SALIDA_RESUMEN = f'{RUTA_EQ}/06_resumen.csv'
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
-# Horizontes en ventanas: 1, 2 y 3 son 10, 20 y 30 minutos. Más allá, con
-# tramos de ~10 ventanas, casi todas las ventanas quedan censuradas.
 HORIZONTES = [1, 2, 3]
 
-# Todos los detectores se calibran igual: percentil 95 del puntaje en las
-# ventanas quietas de validación. Así todos tienen ~5 % de marcas en lo quieto
-# de validación, y la comparación es justa.
 PERCENTIL_UMBRAL = 95
 
 N_BOOT = 1000
 
-# PARCHE 2 -- n mínimo para reportar una proporción. Con 4 ventanas marcadas,
-# las 4 seguidas de alarma, p = 1,0000 en todos los remuestreos: el IC del RR
-# sale angosto por construcción y no significa nada (pasó con indice_W en
-# CR011: RR 4,28 [3,66; 4,96] sobre 4 ventanas). Bajo este n se informa la
-# fila con 'n insuficiente' y los números en NaN; la fila no se borra, porque
-# que el detector casi no marque ES el resultado.
 N_MIN_MARCADAS = 30
 
-# El detector cuyo resumen va al cierre. Es el mismo checkpoint del paso 05 y
-# de la Fase B; los otros se miden igual, al lado.
-# PARCHE P8 -- el detector principal pasa al checkpoint de MÍNIMA PÉRDIDA de
-# validación (autoencoder_W60_normales.pt), que ya estaba entrenado. Razón,
-# sin mirar prueba: el criterio de máxima separación elige épocas inestables
-# (04e, 3 semillas: épocas 7, 30 y 47, sd 20 sobre 100) porque maximiza una
-# razón de medianas ruidosa, y además usa las etiquetas de las reglas en
-# validación; la mínima pérdida elige 97-98 en las tres semillas y no usa
-# etiquetas. La separación se sigue reportando al lado como comparación.
 DETECTOR_PRINCIPAL = 'AE_normales'
 
 PERMITIR_SPLIT_DESVIADO = False
@@ -190,9 +89,6 @@ LLAVES = ['tramo_id', 'ventana_id']
 medias = [f'{v}_media' for v in VARIABLES]
 features = pd.read_csv(ARCHIVO_FEATURES, usecols=LLAVES + medias)
 
-# Sólo los tramos de validación y prueba tienen error de reconstrucción. Los
-# tramos no cruzan el corte (PARCHE 2), así que cada tramo está entero de un
-# lado: se toman los tramos que aparecen en el archivo de error, completos.
 tramos_eval = set(err.tramo_id)
 d = (ventanas[ventanas.tramo_id.isin(tramos_eval)]
      [LLAVES + ['timestamp_inicio', 'n_reglas_activas', 'w_max'] + ids_reglas]
@@ -204,8 +100,6 @@ sin_error = int(d[cols_err[0]].isna().sum())
 assert sin_error == 0, (f'{sin_error} ventanas de tramos de val/test sin error '
                         f'de reconstrucción: el paso 05 no las evaluó todas.')
 
-# ventana_id tiene que ser contigua dentro de cada tramo: el "antes" y el
-# "después" de una ventana se buscan por índice, no por fecha.
 _salto = d.groupby('tramo_id').ventana_id.diff().dropna()
 assert (_salto == 1).all(), 'ventana_id no es contiguo dentro de algún tramo'
 
@@ -220,11 +114,6 @@ print(f'  val {int((d.conjunto == "val").sum()):,} | '
 # =============================================================================
 # 2. LOS PUNTAJES DE LOS CUATRO DETECTORES
 # =============================================================================
-# z_medias: la línea base trivial. Cada sensor se estandariza con la media y
-# la desviación de sus medias en las ventanas QUIETAS de VALIDACIÓN, y el
-# puntaje de la ventana es el máximo |z| sobre los 14. No sabe de forma, ni
-# de dinámica, ni de correlación entre sensores: sólo "algún sensor está
-# lejos de su nivel normal".
 print('\n' + '=' * 72)
 print('2. DETECTORES')
 print('=' * 72)
@@ -251,12 +140,6 @@ print('prueba marcan mucho más, es la deriva entre períodos que ya mostró la'
 print('Fase B: se reporta, y por eso lo que sigue compara detectores entre sí')
 print('y contra el azar, no contra un 5 % ideal.')
 
-# PARCHE 4 -- la deriva se MIDE, no solo se narra. Para cada detector: qué
-# fracción de las quietas marca en validación (~5 % por construcción) y en
-# prueba, y la mediana del puntaje de las quietas en cada período. Si la
-# mediana de las QUIETAS sube de val a prueba, lo que se movió es el proceso
-# (o el sensor), no la cantidad de anomalías. No usa el generador aleatorio:
-# no altera ningún IC. El umbral NO se recalibra con prueba.
 print('\n' + '=' * 72)
 print('2b. DERIVA DE CALIBRACIÓN ENTRE VALIDACIÓN Y PRUEBA (ventanas quietas)')
 print('=' * 72)
@@ -282,9 +165,6 @@ print('prueba que en validación. Eso es deriva del proceso, no más anomalías.
 # =============================================================================
 # 3. QUÉ VIENE DESPUÉS DE CADA VENTANA
 # =============================================================================
-# futura_k: hay alarma en alguna de las k ventanas siguientes DEL MISMO TRAMO.
-# Si el tramo se acaba antes de k ventanas, el resultado no se conoce y la
-# ventana queda censurada para ese horizonte (NaN), no se cuenta como "no".
 g = d.groupby('tramo_id')
 for k in HORIZONTES:
     fut = pd.concat([g.alarma.shift(-j) for j in range(1, k + 1)], axis=1)
@@ -297,8 +177,6 @@ rng = np.random.default_rng(SEED)
 
 
 def bootstrap_tramos(df, estadistico, n=N_BOOT):
-    """IC 95 % remuestreando TRAMOS enteros: las ventanas de un mismo tramo
-    están correlacionadas, y remuestrearlas sueltas achicaría el intervalo."""
     grupos = df.groupby('tramo_id').indices
     claves = np.array(list(grupos))
     vals = []
@@ -335,8 +213,6 @@ for nom in DETECTORES:
         p1 = float(y[m].mean()) if m.any() else np.nan
         p0 = float(y[~m].mean()) if (~m).any() else np.nan
         lo, hi = bootstrap_tramos(q, rr)
-        # PARCHE 2 -- el bootstrap se corre igual (consume el generador como
-        # antes, así los IC de las demás filas no cambian) y después se anula.
         _suf = int(m.sum()) >= N_MIN_MARCADAS
         if not _suf:
             p1, lo, hi = np.nan, np.nan, np.nan
@@ -363,10 +239,6 @@ if len(_insuf):
 # =============================================================================
 # 5. AUC DE ANTICIPACIÓN — sin umbral
 # =============================================================================
-# Sobre las ventanas quietas de prueba: ¿el puntaje ordena las que van a tener
-# alarma en la próxima ventana por encima de las que no? Es la misma pregunta
-# que (4) pero sin depender del P95: un detector puede tener mal calibrado el
-# umbral y aun así ordenar bien.
 print('\n' + '=' * 72)
 print('5. AUC DE ANTICIPACIÓN (próxima ventana, quietas de prueba)')
 print('=' * 72)
@@ -390,14 +262,6 @@ for nom, col in DETECTORES.items():
 # =============================================================================
 # 6. TIEMPO DE ANTICIPACIÓN, EPISODIO POR EPISODIO
 # =============================================================================
-# Inicio de episodio: ventana con alarma cuya ventana anterior, en el mismo
-# tramo, está quieta. Si la alarma ya está en la ventana 0 del tramo, el
-# inicio real puede haber sido antes del hueco de datos: queda fuera
-# (censurado a la izquierda) y se cuenta.
-#
-# Anticipación: cuántas ventanas quietas INMEDIATAMENTE anteriores al inicio
-# estaban marcadas sin interrupción. 0 = la ventana justo anterior no estaba
-# marcada: no hubo aviso. Por 10 minutos es el adelanto.
 print('\n' + '=' * 72)
 print('6. TIEMPO DE ANTICIPACIÓN (inicios de episodio en prueba)')
 print('=' * 72)
@@ -452,14 +316,6 @@ if len(eps):
           f'tiene 3 o más.')
     print(f'Inicios con una regla TRIP (L, A8, A11): {int(eps.trip.sum())}')
 
-    # PARCHE 3 -- el techo estructural de la anticipación. Un inicio
-    # observable tiene, por definición, una ventana quieta justo antes: un
-    # detector que marcara todo lo avisaría siempre, así que "% avisados" no
-    # tiene techo útil sobre los observables. El techo real aparece al contar
-    # también los censurados (la alarma ya está en la ventana 0 del tramo, sin
-    # nada antes que mirar): esos no los avisa ningún detector. Y el techo del
-    # ADELANTO de cada inicio son sus quietas previas: se mide en cuántos
-    # avisos el adelanto ya es todo lo que el tramo permite ver.
     _total_inicios = len(eps) + censurados
     _pct_avisables = 100 * len(eps) / _total_inicios if _total_inicios else np.nan
     print(f'\nTecho estructural: de {_total_inicios:,} inicios de alarma en prueba, '
@@ -471,9 +327,6 @@ if len(eps):
         avisados = a > 0
         lo, hi = bootstrap_tramos(eps, lambda x, nom=nom:
                                   (x[f'anticip_{nom}_min'] > 0).mean())
-        # Lo que se esperaría por azar: que la ventana justo anterior esté
-        # marcada con la misma frecuencia con que el detector marca CUALQUIER
-        # ventana quieta de prueba que NO precede a una alarma.
         _ctrl = te[te.quieta & (te.futura_1 == 0)]
         azar = float(_ctrl[f'marca_{nom}'].mean())
         a_av = a[avisados]
@@ -489,7 +342,6 @@ if len(eps):
             'auc_anticipacion': round(auc[nom][0], 3),
             'auc_ic_inf': round(auc[nom][1], 3),
             'auc_ic_sup': round(auc[nom][2], 3),
-            # PARCHE 3
             'inicios_censurados': censurados,
             'pct_inicios_avisables': round(_pct_avisables, 1),
             'pct_avisados_sobre_todos': round(100 * avisados.sum()
@@ -509,8 +361,6 @@ if len(eps):
 
     print('\nPor criticidad de la regla que se enciende (detector principal):')
     _col = f'anticip_{DETECTOR_PRINCIPAL}_min'
-    # PARCHE 2 -- los grupos con menos de N_MIN_MARCADAS inicios se marcan
-    # (criticidad 3 tenía 1 inicio y salía "100 % avisados").
     def _por_grupo(col_g):
         t = eps.groupby(col_g).agg(
             inicios=(_col, 'size'),
@@ -528,19 +378,8 @@ resumen = pd.DataFrame(filas_res)
 
 
 # =============================================================================
-# 6b. PARCHE 1 — LÍNEA BASE DE LA DETECCIÓN (no de la anticipación)
+# 6b.LÍNEA BASE DE LA DETECCIÓN (no de la anticipación)
 # =============================================================================
-# El paso 05 reporta AUC = 0,83 en prueba para separar ventanas con alarma de
-# ventanas quietas, pero sin línea base: no dice si un detector trivial
-# hace lo mismo. Aquí se mide esa misma AUC (todas las ventanas de prueba,
-# alarma vs quieta) para los cuatro detectores, y la DIFERENCIA pareada
-# AE - z_medias remuestreando los mismos tramos para ambos: con eso no basta
-# con mirar si los IC se tocan.
-# Va después de la sección 6 a propósito: bootstrap_tramos comparte el
-# generador aleatorio, y ponerla antes cambiaría los IC ya reportados.
-# Advertencia para la lectura: z_medias parte con ventaja, porque las reglas
-# se disparan por niveles que se ven en las medias (misma lógica que la
-# restricción 2 de la Fase B). Si empata, no significa que el AE sobre.
 print('\n' + '=' * 72)
 print('6b. AUC DE DETECCIÓN EN PRUEBA (alarma vs quieta) — línea base')
 print('=' * 72)
@@ -580,11 +419,6 @@ if len(resumen):
     resumen['auc_det_ic_sup'] = resumen.detector.map(
         lambda n: round(auc_det[n][2], 3))
 
-# PARCHE 5 -- la diferencia pareada contra z_medias queda en el CSV, para
-# CADA checkpoint del autoencoder, y no solo impresa para el principal. Así la
-# tabla de los tres equipos sale directo de los 06_resumen.csv. Va al final
-# de 6b: los bootstraps nuevos consumen el generador después de todos los IC
-# ya reportados, que no cambian.
 _difs = {DETECTOR_PRINCIPAL: (d_det, d_lo, d_hi)}
 for nom in [n for n in DETECTORES if n.startswith('AE_') and n != DETECTOR_PRINCIPAL]:
     def _dif_n(x, nom=nom):
@@ -610,7 +444,7 @@ print('7. GUARDANDO')
 print('=' * 72)
 for _df, _f in ((prec, SALIDA_PRECURSORES), (eps, SALIDA_EPISODIOS),
                 (resumen, SALIDA_RESUMEN),
-                (deriva, f'{RUTA_EQ}/06_deriva.csv')):          # PARCHE 4
+                (deriva, f'{RUTA_EQ}/06_deriva.csv')):
     _df.to_csv(_f, sep=';', decimal=',', index=False, encoding='utf-8-sig')
     print(f'Guardado: {_f}')
 
@@ -621,7 +455,7 @@ if len(resumen):
     r = resumen.set_index('detector')
     p = r.loc[DETECTOR_PRINCIPAL]
     pr = prec[(prec.detector == DETECTOR_PRINCIPAL) & (prec.horizonte_min == 10)]
-    if len(pr) and not pr.iloc[0].n_suficiente:                  # PARCHE 2
+    if len(pr) and not pr.iloc[0].n_suficiente:
         print(f'RR a 10 min: n insuficiente ({pr.iloc[0].marcadas} quietas '
               f'marcadas, mínimo {N_MIN_MARCADAS}).')
     elif len(pr):

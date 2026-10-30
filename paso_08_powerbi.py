@@ -1,24 +1,7 @@
 """
+=============================================================================
 PASO 08 — UN SOLO EXCEL PARA POWER BI CON LOS TRES CHANCADORES
 =============================================================================
-Entrada:  las carpetas de resultados de cada equipo (CR010 en la raiz o en
-          tesis_chancadores/CR010, CR009 y CR011 en su subcarpeta):
-            06_resumen.csv, 06_precursores.csv, 06_episodios.csv
-            04b_comparacion_epocas.csv, B1_resultados.csv, B2_resultados.csv,
-            B2_variable_causante.csv, {EQUIPO}_eventos_por_regla.csv,
-            {EQUIPO}_wasserstein_bandas_W60*.csv,
-            {EQUIPO}_error_reconstruccion_W60.csv + {EQUIPO}_ventanas_W60.csv
-Salida:   tesis_chancadores/powerbi/tesis_powerbi.xlsx, una hoja por tema,
-          cada una con la columna 'equipo' y los numeros ya como numeros.
-
-No calcula nada nuevo salvo la deriva diaria (mediana del error de las
-ventanas normales por dia), que es la misma cuenta de la figura F04. Corre
-en CPU en uno o dos minutos.
-
-POR QUE EXISTE. Los archivos de resultados vienen en dos formatos (';' con
-coma decimal y ',' con punto decimal) y varios se llaman igual en las tres
-carpetas. Power BI los lee mal si no se configura cada uno. Aca se leen con
-el formato correcto, se les agrega el equipo y se juntan.
 """
 import os
 
@@ -34,7 +17,7 @@ SALIDA = f'{SALIDA_DIR}/tesis_powerbi.xlsx'
 
 
 def carpeta(eq):
-    """CR010 puede estar en la raiz (corrida original) o en su subcarpeta."""
+    """CR010 puede estar en la raiz o en su subcarpeta."""
     sub = f'{RUTA_BASE}/{eq}'
     if os.path.isdir(sub):
         return sub
@@ -51,10 +34,9 @@ def leer(ruta):
 
 
 TABLAS = {
-    # hoja                  archivo (con {eq} si lleva el prefijo del equipo)
     'resumen_06':           '06_resumen.csv',
     'precursores_06':       '06_precursores.csv',
-    'deriva_06':            '06_deriva.csv',          # PARCHE P2 del paso 06
+    'deriva_06':            '06_deriva.csv',          # Del paso 06
     'episodios_06':         '06_episodios.csv',
     'entrenamiento_04b':    '04b_comparacion_epocas.csv',
     'faseB_B1':             'B1_resultados.csv',
@@ -138,8 +120,6 @@ with pd.ExcelWriter(SALIDA) as xw:
         if not partes:
             continue
         d = pd.concat(partes, ignore_index=True)
-        # P6: CR010 es el equipo sobre el que se desarrolló todo (arquitectura,
-        # épocas, checkpoint, umbral); CR009 y CR011 son la replicación.
         d.insert(1, 'rol', np.where(d.equipo == 'CR010', 'desarrollo',
                                     'replicacion'))
         d.to_excel(xw, sheet_name=hoja, index=False)

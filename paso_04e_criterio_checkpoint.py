@@ -3,62 +3,12 @@
 =============================================================================
 PASO 04e — ¿CON QUÉ CRITERIO HAY QUE ELEGIR EL CHECKPOINT?
 =============================================================================
-El paso 04 guarda dos checkpoints de la misma corrida:
-
-  autoencoder_W60_normales.pt       el de MÍNIMA pérdida de validación
-  autoencoder_W60_normales_sep.pt   el de MÁXIMA separación   <- el que se usa
-
-Esa elección se hizo cuando la separación era la única métrica disponible.
-El 04d mostró dos cosas que la ponen en duda:
-
-  - la separación no predice la detección: sobre nueve corridas,
-    rho(separación, AUC) = -0,25 con p = 0,52, o sea ninguna relación;
-  - el error de reconstrucción en ventanas normales SÍ la predice, y de
-    forma perfecta: rho = -1,000. Cuanto mejor reconstruye lo normal,
-    mejor detecta.
-
-Si eso vale también DENTRO de una corrida, época a época, entonces el
-checkpoint de mínima pérdida —que ya está guardado y no se usa— podría ser
-mejor detector que el que está en producción. Este script lo mide.
-
-QUÉ HACE
---------
-Entrena la configuración actual con 3 semillas y 20 épocas, y en CADA época
-calcula todas las métricas. Después compara tres criterios de selección:
-
-  1. mínima pérdida de validación   (el checkpoint "normales")
-  2. máxima separación              (el checkpoint "normales_sep", el actual)
-  3. máximo AUC                     (el candidato)
-
-CÓMO SE EVITA HACER TRAMPA
---------------------------
-El criterio elige la época mirando VALIDACIÓN, y después la métrica se
-reporta sobre PRUEBA, que no se tocó para elegir nada. Si se eligiera y se
-midiera sobre el mismo conjunto, el criterio que más se mueve ganaría solo
-por azar. Esta es también la forma correcta de reportarlo en la memoria.
-
-Entradas: CR010_limpio.csv       (paso 01)
-          reglas_engine.py
-Salidas:  04e_curvas_por_epoca.csv   (3 semillas x 20 épocas = 60 filas)
-          04e_comparacion_criterios.csv
-
-NO toca el paso 04 ni sus checkpoints. No reemplaza nada: mide y reporta.
-Tiempo estimado: ~6 minutos con GPU.
-=============================================================================
 """
 
 from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
-# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
-# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
-#     import os; os.environ['EQUIPO'] = 'CR009'
-# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
-# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
-# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
-# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
-# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
@@ -85,18 +35,10 @@ print('Dispositivo:', device)
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
-# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
-# validación. Con un número fijo y corto de épocas el experimento medía qué
-# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
-# producción llegó a su mínimo recién en la época 93.
 EPOCAS_MAX = 100
 PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
-# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
-# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
-# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
 SALIDA_CURVAS = f'{RUTA_EQ}/04e_curvas_por_epoca_v2.csv'
 SALIDA_COMPARA = f'{RUTA_EQ}/04e_comparacion_criterios_v2.csv'
 
@@ -105,7 +47,7 @@ VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
 CFG = {'lr': 1e-3, 'num_layers': 2, 'd_model': 64, 'nhead': 4, 'dim_ff': 128}
 
 # =============================================================================
-# 1. DATOS — el corte por fecha del paso 04 (PARCHE 1), y ahora SÍ se usa prueba
+# 1. DATOS — el corte por fecha del paso 04 , y ahora SÍ se usa prueba
 # =============================================================================
 print('\n' + '=' * 72)
 print('1. PREPARANDO LOS DATOS')
@@ -125,18 +67,7 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
 # -----------------------------------------------------------------------------
-# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
-# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
-#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
-#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
-#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
-#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
-# Con el corte viejo este experimento entrenaba y validaba sobre períodos
-# distintos a los del modelo que se defiende, y sus números no se podían
-# comparar con él. Ahora las ventanas normales, el período de entrenamiento
-# y el de validación son exactamente los del paso 04.
 import json
 _corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
@@ -285,10 +216,6 @@ print('=' * 72)
 
 if os.path.exists(SALIDA_CURVAS):
     curvas = pd.read_csv(SALIDA_CURVAS, sep=';', decimal=',')
-    # PARCHE P10 -- la clave de lo ya hecho incluye el corte. Antes era solo
-    # (configuración, semilla): una corrida guardada con otro corte se habría
-    # reutilizado sin aviso. Las filas sin la columna T_train son de este mismo
-    # archivo _v2, creado junto con el corte del JSON, y se aceptan con aviso.
     if 'T_train' in curvas.columns:
         _otro = curvas.T_train.notna() & (curvas.T_train.astype(str) != str(_T_TRAIN))
         if _otro.any():
@@ -341,7 +268,7 @@ for semilla in SEMILLAS:
         print(f'  época {ep:>2}  val: err_n={fila["val_err_normal"]:.5f} '
               f'sep={fila["val_separacion"]:5.2f} AUC={fila["val_auc"]:.4f}  |  '
               f'test: AUC={fila["test_auc"]:.4f} recall={fila["test_recall"]:.4f}')
-        # PARCHE 2 (cont.) -- el mismo early stopping del paso 04
+        # (cont.) -- el mismo early stopping del paso 04
         if fila['val_perdida'] < mejor_val - 1e-5:
             mejor_val, espera = fila['val_perdida'], 0
         else:
@@ -351,7 +278,7 @@ for semilla in SEMILLAS:
             break
 
     _nuevas = pd.DataFrame(filas)
-    _nuevas['T_train'] = str(_T_TRAIN)                           # PARCHE P10
+    _nuevas['T_train'] = str(_T_TRAIN)
     curvas = pd.concat([curvas, _nuevas], ignore_index=True)
     curvas.to_csv(SALIDA_CURVAS, sep=';', decimal=',', index=False,
                   encoding='utf-8-sig')
@@ -365,9 +292,6 @@ print('3. ¿QUÉ ÉPOCA ELIGE CADA CRITERIO, Y QUÉ DA EN PRUEBA?')
 print('=' * 72)
 
 CRITERIOS = [
-    # PARCHE 3 -- 'val_perdida' (media del error en normales) es EXACTAMENTE
-    # la pérdida con que el paso 04 guarda el checkpoint "normales"; antes se
-    # usaba la mediana, que es parecida pero no la misma.
     ('mínima pérdida de validación', 'val_perdida', 'min',
      'el checkpoint "normales" (guardado, no se usa)'),
     ('máxima separación', 'val_separacion', 'max',
@@ -411,9 +335,6 @@ for nombre, _, _, _ in CRITERIOS:
                         ('test_recall', base_rec, 'recall')]:
         dif = g[met].mean() - b.mean()
         disp = np.sqrt((g[met].std(ddof=1) ** 2 + b.std(ddof=1) ** 2) / 2)
-        # PARCHE 5 -- con dispersión cero (los dos criterios eligen la misma
-        # época en todas las semillas) la razón era NaN, y NaN > -1 es False:
-        # el script etiquetaba 'PEOR' a una diferencia de exactamente cero.
         if disp > 0:
             veces = dif / disp
         else:
@@ -432,12 +353,6 @@ print(f'Guardado: {SALIDA_COMPARA}')
 print('\n' + '=' * 72)
 print('CÓMO LEERLO')
 print('=' * 72)
-# PARCHE P9 -- la regla anterior decía "si supera por 2 veces la dispersión
-# EN AUC Y EN RECALL sobre PRUEBA, conviene cambiar el criterio": eso es
-# elegir un hiperparámetro mirando prueba. La regla se reescribe en términos
-# de VALIDACIÓN y ESTABILIDAD. Prueba se imprime época a época solo para
-# describir; en la memoria se declara que se observó y que el modelo de
-# producción no se eligió con esa información.
 print('Criterio para elegir el checkpoint (sin mirar prueba): el que elige una')
 print('época ESTABLE entre semillas (baja dispersión de la época elegida) y no')
 print('necesita etiquetas. La desviación de la época elegida por cada criterio')
@@ -445,11 +360,5 @@ print('está en la tabla de arriba. Prueba se reporta una vez, para describir.')
 print('Nota de lectura: si la mínima pérdida cae cerca de la última época, mirar')
 print('la curva de validación: si está plana desde mucho antes, el argmin cae')
 print('tarde por planitud, no porque el modelo siga mejorando.')
-# PARCHE 4 -- prueba ya se miró con el modelo de producción: este script la
-# usa para MEDIR, no para elegir. El paso 06 ya comparó los dos checkpoints
-# reales en prueba (AUC 0,836 contra 0,828), y esto lo generaliza a 3 semillas.
-# PARCHE P8/P9 -- el modelo de producción pasó a mínima pérdida (PARCHE P8 en
-# los pasos 05, 06, 07 y Fase B) por ESTABILIDAD de la época elegida, que es
-# un argumento de validación; no por los números de prueba de esta tabla.
 print('\nModelo de producción: mínima pérdida, elegido por estabilidad de la')
 print('época (validación). Los números de prueba de arriba solo describen.')

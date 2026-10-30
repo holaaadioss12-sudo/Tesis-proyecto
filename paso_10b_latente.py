@@ -3,43 +3,6 @@
 =============================================================================
 PASO 10b — ¿EL AUTOENCODER SEPARA LA GRAVEDAD EN SU REPRESENTACIÓN INTERNA?
 =============================================================================
-El paso 10 mostró que K-means y DBSCAN no encuentran leve / media / grave
-sobre las variables de la ventana (ARI en prueba <= 0,035). Probado aparte, lo
-mismo pasó con GMM, HDBSCAN, HMM, K-means sembrado, DEC e IDEC sobre el índice
-W y el error del autoencoder. Queda una prueba con motivo propio: agrupar el
-espacio latente del autoencoder Transformer ya entrenado, los 64 números con
-que el encoder resume cada ventana (media sobre los 60 pasos). Es la
-representación que aprendió cómo se ve la operación normal, y no hay que
-entrenar nada nuevo. Si tampoco ahí aparecen las tres bandas, la conclusión
-del paso 10 queda firme: la gravedad no forma grupos naturales en la señal.
-
-Qué hace:
-  1. Rearma las ventanas de validación y prueba EXACTAMENTE como el paso 05
-     (mismo corte, mismo normalizador, sin traslape) y las pasa por el
-     checkpoint de mínima pérdida (PARCHE P8).
-  2. Verifica que el error de reconstrucción recalculado sea el mismo del
-     paso 05. Si no coincide, se detiene: las ventanas no serían las mismas.
-  3. Guarda el latente de cada ventana (10b_latente.npz).
-  4. Agrupa el latente de las ventanas que el autoencoder marca, con la misma
-     receta del paso 10: se ajusta en validación y se mide en prueba.
-        K-means k = 2..6, GMM k = 3 y k por BIC, HDBSCAN, y K-means sembrado
-        con TODAS las etiquetas de validación (diagnóstico: si ni partiendo
-        de los centros reales recupera las bandas, las bandas se solapan).
-     Se informa la coincidencia con las bandas de N (ARI, NMI) y con la regla
-     dominante de la ventana (NMI): ¿los grupos son de gravedad o de tipo?
-  5. Sonda supervisada: regresión logística y XGBoost sobre el latente. Dice
-     si la gravedad está en el latente aunque no forme grupos.
-  6. Un mapa del latente (2 componentes principales) coloreado por banda y por
-     regla dominante.
-
-Entradas: {EQUIPO}_limpio.csv, {EQUIPO}_corte_split.json   (paso 01)
-          normalizador_W60.npz, autoencoder_W60_normales.pt (paso 04)
-          {EQUIPO}_error_reconstruccion_W60.csv            (paso 05)
-          10_nivel_ventanas.csv                            (paso 10)
-Salidas:  10b_latente.npz, 10b_agrupamiento_latente.csv,
-          10b_sonda_latente.csv, 10b_latente_mapa.png
-Corre en un par de minutos (CPU o GPU); lo más lento es leer el limpio.
-=============================================================================
 """
 import os
 import json
@@ -93,9 +56,9 @@ except ImportError:
 SEED = 42
 W = 60
 LLAVES = ['tramo_id', 'ventana_id']
-AE = 'err_AE_normales'          # checkpoint de mínima pérdida (PARCHE P8)
+AE = 'err_AE_normales'          # Checkpoint de mínima pérdida
 PERCENTIL_UMBRAL = 95
-BANDA = 'banda_N_empinada_natural'   # PARCHE P14: la escala principal del paso 10
+BANDA = 'banda_N_empinada_natural'   # La escala principal del paso 10
 NIVELES = ['1_leve', '2_media', '3_grave']
 K_RANGO = range(2, 7)
 PCA_VARIANZA, PCA_MAX = 0.80, 10
@@ -141,10 +104,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # =============================================================================
 # 1. LAS MISMAS VENTANAS DEL PASO 05
 # =============================================================================
-# Copia literal de lo que hace el paso 05: tramos continuos de 10 s, se
-# descartan los de menos de W muestras y se numeran DESPUÉS de descartar,
-# corte por la fecha de inicio del tramo, normalizador del paso 04 y ventanas
-# sin traslape.
 print('=' * 72)
 print(f'PASO 10b — EL ESPACIO LATENTE DEL AUTOENCODER (W = {W})')
 print('=' * 72)
@@ -376,8 +335,6 @@ if HDBSCAN is not None:
            else np.full(len(Xt), -1))
     anota(f'HDBSCAN ({_gh} grupos, {100 * (h.labels_ == -1).mean():.0f} % ruido)',
           _gh, h.labels_, _lt)
-# Diagnóstico: partir de los centros REALES de cada banda (todas las etiquetas
-# de validación). Si ni así recupera las bandas, éstas se solapan en el latente.
 _n_banda = pd.Series(b_va[pos_va]).value_counts().reindex(NIVELES).fillna(0)
 HAY_BANDAS = bool((_n_banda >= MIN_CLASE).all())
 if HAY_BANDAS:
@@ -436,10 +393,6 @@ print(sonda.to_string(index=False))
 # =============================================================================
 # 6. MAPA DEL LATENTE
 # =============================================================================
-# Dos componentes principales del latente (ajustadas en validación), ventanas
-# de prueba marcadas con N > 0. Izquierda: banda de N, rampa ordinal de un solo
-# tono. Derecha: regla dominante, tres más frecuentes + resto en gris, con
-# forma distinta además del color.
 P2 = PCA(n_components=2, random_state=SEED).fit(_zv)
 xy = P2.transform(_zt)[pos_te]
 TINTA, TINTA2, GRILLA, FONDO = '#0b0b0b', '#52514e', '#e1e0d9', '#fcfcfb'

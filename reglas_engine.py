@@ -3,95 +3,19 @@
 =============================================================================
 reglas_engine.py  -  el motor de las 32 reglas de alerta
 =============================================================================
-
-                  *** LEE ESTO ANTES DE CORRERLO ***
-
-ESTE ARCHIVO ES UNA RECONSTRUCCION, NO TU ORIGINAL.
-
-Tu reglas_engine.py se perdio. Lo que sigue esta armado juntando los umbrales
-que aparecen desperdigados en tus otros scripts, que son los que si
-sobrevivieron:
-
-  - 00_diagnostico_previo.py, diccionario REGLAS_POR_VARIABLE y la lista
-    DIFERENCIAS (T7-T1 y T8-T1 con sus tres y dos cortes)
-  - 01_preprocesamiento.py, diccionario UMBRAL_REGLA_MAX
-  - criticidad.py, FAMILIAS_ANIDADAS, donde cada familia lleva sus umbrales
-    escritos en el comentario de la linea
-  - 02_parches.py, VARIABLES_DE_REGLA (que variables mira cada regla) y
-    REGLAS_ROLLING (A4 y A17 con ventana de 1 h y min_count 4 y 3)
-
-Las 31 reglas evaluables cierran y los umbrales son consistentes entre las
-cuatro fuentes. Pero CONSISTENTE NO ES IGUAL A CORRECTO: si tu original tenia
-un operador >= donde aca hay >, una condicion extra en alguna regla, o una
-definicion distinta de "sostenido", los conteos de activacion van a dar
-distinto y TODO lo que viene despues cambia con ellos -- que ventana es
-normal, con que entrena el autoencoder, y los numeros de la memoria.
-
-QUE TENES QUE HACER, Y NO ES OPCIONAL:
-  1. Corre resumen_umbrales() -- imprime las 32 filas completas.
-  2. Compara esa tabla contra el DICCIONARIO DE ALERTAS de la planta, que es
-     el documento del que salieron estas reglas.
-  3. Corregi aca lo que no coincida, y recien ahi corre el 02.
-
-Si el diccionario no lo tenes a mano, pediselo al profesor antes de seguir.
-Es media hora de verificacion que evita rehacer el pipeline entero.
-
------------------------------------------------------------------------------
-EL CONTRATO, que es lo que el 02, el 04 y el 05 esperan:
-
-    evaluar_reglas(df, verbose=False) -> DataFrame con el MISMO indice que df,
-        una columna 0/1 por cada ID de regla evaluable, mas 'n_reglas_activadas'
-        y 'estado'.
-    REGLAS            -> lista de dicts, cada uno con al menos 'id'
-    _tags_de_regla()  -> {id: [variables que mira]}, que es contra lo que el
-                         02 verifica su VARIABLES_DE_REGLA
-
-A23 NO sale como columna salvo que ZI266 este en el dataframe. Como ZI266 no
-esta en el registro, quedan 31 de 32, y eso se declara en la memoria.
-
-SOBRE LOS NaN: una comparacion con NaN da False, asi que una muestra con el
-sensor caido no activa la regla. Eso es lo correcto AQUI, y es justamente el
-motivo de que evaluabilidad() viva aparte en el 02: una regla que no se activa
-porque el dato no estaba no es lo mismo que una que no se activa porque el
-equipo estaba sano, y sin esa distincion la afirmacion "esta regla nunca se
-activo" es indecidible.
-=============================================================================
 """
 
 import numpy as np
 import pandas as pd
 
-# Tolerancia para la comparacion con cero de A3.
-#
-# EN 0.0 REPRODUCE EL ORIGINAL EXACTO: |x| <= 0 es lo mismo que x == 0, que es
-# lo que hacia tu motor. Se deja como constante y no como literal porque '== 0'
-# sobre un flotante es una trampa conocida: un sensor que lee 1e-9 con la
-# camara vacia no activa la regla nunca, y A3 es justamente la que necesita
-# detectar "camara vacia". El bloque 2 del 00 mide las dos versiones ('== 0' y
-# '<= 1e-6') sobre tus datos. Si dan lo mismo, dejalo en 0.0 y decilo en la
-# memoria; si dan distinto, subilo a 1e-6 y declara el cambio.
 TOL_CERO = 0.0
 
-# Las cuatro vibraciones se agregan con el MAXIMO: la condicion del diccionario
-# es "alguna de las cuatro supera el umbral", no el promedio.
 VARS_VIBRACION = ['V1', 'V2', 'V3', 'V4']
 
 
 # =============================================================================
 # LAS 32 REGLAS
 # =============================================================================
-# tipo:
-#   'umbral'         una variable contra un valor
-#   'umbral_max'     el maximo de varias variables contra un valor (vibracion)
-#   'diferencia'     a - b contra un valor
-#   'y'              conjuncion de dos condiciones de umbral
-#   'rolling_count'  la condicion base se cumple min_count veces dentro de una
-#                    ventana temporal. Con ventana de tiempo (no de filas), los
-#                    huecos reales del registro se respetan solos.
-#
-# La criticidad NO esta aca a proposito: vive en criticidad.py, que es la
-# transcripcion de criticidadCH8.xlsx. Si estuviera en los dos lados se iban a
-# desincronizar. verificar_contra_criticidad() comprueba que los dos coincidan.
 REGLAS = [
     # --- corriente del motor (CM = AI) ---------------------------------------
     {'id': 'A',   'tipo': 'umbral', 'var': 'CM', 'op': '>', 'valor': 100,
@@ -103,11 +27,6 @@ REGLAS = [
      'desc': 'Sobrecarga permanente: >100 mas de 4 veces en 1 h'},
 
     # --- nivel de camara (PI = LIT254) ---------------------------------------
-    # B ES COMPUESTA. Lo tuve mal en la reconstruccion: la puse como umbral
-    # puro sobre PI porque es como la trata 00_diagnostico_previo.py. El motor
-    # original la tiene como AND -- nivel alto Y corriente alta -- y tiene
-    # sentido fisico: un nivel alto con el equipo descargado no es un atollo.
-    # La tabla de 02_parches ('B': ['PI','CM']) era la correcta.
     {'id': 'B',   'tipo': 'y', 'var': 'PI', 'op': '>', 'valor': 60,
      'var2': 'CM', 'op2': '>', 'valor2': 100,
      'desc': 'Atollo / material excesivo o compactacion'},
@@ -198,14 +117,12 @@ IDS = [r['id'] for r in REGLAS]
 REGLAS_TRIP = [r['id'] for r in REGLAS if r.get('trip')]
 POR_ID = {r['id']: r for r in REGLAS}
 
-# Las de conteo movil, con su ventana y su minimo. El 02 las necesita para
-# decidir si una imputacion dentro de la hora compromete de verdad el veredicto.
 ROLLING = {r['id']: {'ventana': r['ventana'], 'min_count': r['min_count']}
            for r in REGLAS if r['tipo'] == 'rolling_count'}
 
 
 def _tags_de_regla():
-    """{id: [variables que mira la regla]}. El 02 verifica su tabla contra esto."""
+    """{id: [variables que mira la regla]}."""
     out = {}
     for r in REGLAS:
         if r['tipo'] == 'diferencia':
@@ -238,12 +155,7 @@ def _serie(df, r):
 
 
 def condicion_base(df, regla_id):
-    """La condicion por MUESTRA de una regla de conteo movil, antes de contar.
-
-    A4 es "CM > 100 al menos 4 veces en 1 h": esto devuelve el "CM > 100" de
-    cada muestra. El 02 lo usa para medir cuanto margen tiene el conteo antes
-    de que una imputacion pueda cambiar el veredicto.
-    """
+    """La condicion por MUESTRA de una regla de conteo movil, antes de contar."""
     r = POR_ID.get(regla_id)
     if r is None or r['tipo'] != 'rolling_count':
         raise ValueError(f'{regla_id} no es una regla de conteo movil')
@@ -269,14 +181,7 @@ def _comparar(x, op, valor):
 
 
 def evaluar_reglas(df, verbose=False):
-    """Evalua las reglas muestra a muestra.
-
-    df : DataFrame con indice datetime y las columnas canonicas (CM, PI, PDF,
-         PEL, T1, T2, T5, T7, T8, T9, V1..V4). Columnas de mas se ignoran.
-
-    Devuelve un DataFrame con el mismo indice: una columna 0/1 por regla
-    evaluable, 'n_reglas_activadas' y 'estado'.
-    """
+    """Evalua las reglas muestra a muestra."""
     if not isinstance(df.index, pd.DatetimeIndex):
         raise TypeError('evaluar_reglas necesita indice datetime: las reglas '
                         'A4 y A17 usan una ventana movil de 1 hora.')
@@ -289,21 +194,6 @@ def evaluar_reglas(df, verbose=False):
             continue
 
         if r['tipo'] == 'rolling_count':
-            # La condicion base se tiene que cumplir min_count veces dentro de
-            # la ventana. rolling con ventana TEMPORAL respeta los huecos del
-            # registro: si el equipo estuvo parado, esas muestras no existen y
-            # no entran en el conteo.
-            # EL CONTEO ES ESTRICTAMENTE MAYOR QUE min_count, no mayor o
-            # igual. Lo tuve mal: con >= , A4 disparaba con 4 ocurrencias y el
-            # motor original pide 5. Un corrimiento de uno en el umbral de la
-            # regla que mas ventanas consume de todas.
-            #
-            # Y sin min_periods: la ventana movil exige una hora completa de
-            # historia, asi que A4 y A17 no pueden dispararse en los primeros
-            # 60 min de cada tramo. Es lo que hace el motor original y se
-            # respeta, pero conviene saberlo: con tramos de ~1,7 h de promedio,
-            # eso es una parte apreciable del registro donde estas dos reglas
-            # estan apagadas por construccion, no por el estado del equipo.
             base = _comparar(x, r['op'], r['valor'])
             s = pd.Series(base.astype(np.float32), index=df.index)
             act = s.rolling(r['ventana']).sum().to_numpy() > r['min_count']
@@ -337,11 +227,7 @@ def evaluar_reglas(df, verbose=False):
 # VERIFICACION -- correr las dos ANTES de usar el motor
 # =============================================================================
 def resumen_umbrales():
-    """LA TABLA QUE HAY QUE COTEJAR CONTRA EL DICCIONARIO DE ALERTAS.
-
-    Imprimila, ponela al lado del documento de la planta, y revisa fila por
-    fila. Es la unica forma de saber si esta reconstruccion es tu motor.
-    """
+    """LA TABLA QUE HAY QUE COTEJAR CONTRA EL DICCIONARIO DE ALERTAS."""
     filas = []
     for r in REGLAS:
         if r['tipo'] == 'diferencia':
@@ -375,18 +261,7 @@ def resumen_umbrales():
 
 
 def diagnosticar_entorno(verbose=True):
-    """Que archivo esta usando Python para cada modulo del proyecto.
-
-    CORRELA ESTO ANTES DE CULPAR AL CODIGO. En Colab el kernel sobrevive a que
-    reemplaces los archivos en Drive: Python cachea los modulos por nombre, y
-    si importaste algo antes de subir la version nueva, sigue usando la vieja
-    aunque el archivo ya no exista. El sintoma es un error que no tiene nada
-    que ver con la causa.
-
-    Si alguna fila sale en rojo, la solucion no es tocar el codigo:
-    Entorno de ejecucion -> Reiniciar sesion. El contador de celdas vuelve a
-    [1], y ESA es la senal de que se reinicio de verdad.
-    """
+    """Que archivo esta usando Python para cada modulo del proyecto."""
     import sys
     import os
     aqui = os.path.dirname(os.path.abspath(__file__))
@@ -426,24 +301,7 @@ def diagnosticar_entorno(verbose=True):
 
 
 def verificar_contra_criticidad(verbose=True):
-    """Los IDs del motor y los de criticidad.py tienen que ser los mismos.
-
-    Si no coinciden, una de las dos tablas quedo desactualizada y las ventanas
-    van a recibir criticidad de reglas que no existen, o al reves.
-    """
-    # SE CARGA POR RUTA, A PROPOSITO, SIN PASAR POR sys.modules.
-    #
-    # Un 'import criticidad' normal confia en el cache de modulos del kernel, y
-    # ese cache se corrompe con una facilidad que sorprende: basta haber
-    # importado algo con ese nombre antes en la misma sesion para que Python no
-    # vuelva a mirar el archivo nunca mas. Ya paso una vez en este proyecto, y
-    # de la forma mas confusa posible: el nombre 'criticidad' habia quedado
-    # apuntando a 02_parches.py, y el error era "cannot import name
-    # 'CRITICIDAD' from '02_parches'" -- un mensaje que no se parece en nada a
-    # su causa.
-    #
-    # Un validador no puede depender de eso. Carga el archivo que esta al lado
-    # de este, lo ejecuta aparte, y punto. Lo que diga sys.modules no importa.
+    """Los IDs del motor y los de criticidad.py tienen que ser los mismos."""
     import importlib.util
     import os
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -526,7 +384,7 @@ def verificar_contra_criticidad(verbose=True):
 
 
 def test_motor(verbose=True):
-    """Casos sinteticos de activacion conocida. Milisegundos, assert duros."""
+    """Casos sinteticos de activacion conocida."""
     idx = pd.date_range('2025-01-01', periods=6, freq='10s')
     df = pd.DataFrame({
         'CM':  [85, 105, 115, 85, 120, 85],
@@ -551,9 +409,6 @@ def test_motor(verbose=True):
     assert r.K.iloc[2] == r.A15.iloc[2] == r.A14.iloc[2] == 1, 'T1=61 anidada'
     # fila 3: PI = 0 pero CM = 85 (< 35 no, pero A3 pide CM>35) -> A3 SI
     assert r.A3.iloc[3] == 1, 'A3 camara vacia con motor andando'
-    # fila 4: PEL = 100 -> E (<150). B pide PI > 60 Y CM > 100: con PI = 70 y
-    # CM = 120 dispara. Con CM = 85 NO disparaba, y esa es exactamente la
-    # diferencia que la reconstruccion tenia mal.
     assert r.E.iloc[4] == 1 and r.B.iloc[4] == 1, 'PEL bajo, y B compuesta'
     assert r.B.iloc[5] == 0, 'B no puede dispararse con PI = 30'
     # fila 5: V1 = 45 -> O, A20, A19 y A18 a la vez; PEL = 500 -> D y A5

@@ -3,76 +3,6 @@
 =============================================================================
 PASO 10 — NIVEL DE ANOMALÍA POR CRITICIDAD Y FRECUENCIA, Y AGRUPAMIENTO
 =============================================================================
-Lo pidió el profesor en la reunión del 16-oct (está en su esquema a mano):
-
-    "Si yo tengo una ventana, voy a tener una sumatoria de las alarmas ...
-     por cada alarma a_j tengo un criterio c_j ... la suma del criterio sub j
-     por a_j: ahí sale un número, llamémosle nivel de alarma, y según ese
-     valor se va a leve, medio o grave."
-
-    "Después de saber que es anómalo calculo el N nomás. Si el autoencoder
-     me dijo que era anómalo y N me da cero, hay algo en esa ventana que no
-     está en las reglas: eso amerita revisar esa ventana."
-
-    "Tomo todas las anómalas y hago un aprendizaje no supervisado, K-means
-     con tres grupos, o DBSCAN. ¿Encontrará los tres grupos?"
-
-Este script hace esas tres cosas, y XGBoost al lado como tanteo:
-
-  1. N = sum_j w_j * n_j por ventana
-        n_j  episodios de la regla j ACTIVOS en la ventana: los que arrancan
-             en ella y los que vienen de antes (PARCHE P13). Un episodio cuenta
-             una vez por ventana, dure 10 s o los 10 min (ISA-18.2 cuenta la
-             alarma como episodio, no como muestras); una alarma que entra y
-             sale 20 veces cuenta 20. Con sólo los que ARRANCAN, una ventana en
-             medio de una alarma larga quedaba con N = 0, como advierte el
-             bloque 4b del paso 02.
-        w_j  peso por criticidad. OJO, la escala va al revés: criticidad 1 es
-             la MÁS grave. Escala principal EMPINADA 9 / 3 / 1, peso = 3^(3 - c):
-             cada nivel de criticidad pesa el triple del siguiente, así una
-             sola alarma de criticidad 1 no queda como leve (PARCHE P14). Se
-             reporta al lado la lineal 3 / 2 / 1 (peso = 4 - c, criticidad.PESO),
-             con la que una alarma de criticidad 1 vale lo mismo que tres de
-             criticidad 3 y queda bajo el corte de media.
-        Las familias anidadas (PEL > 350 y PEL > 450 son la misma presión) se
-        cuentan una vez por nivel: cada activación pesa lo que pesa el nivel
-        más estricto que alcanzó.
-  2. Bandas: N = 0 normal; N > 0 se corta en leve / media / grave. Los cortes
-     salen de las ventanas anómalas de ENTRENAMIENTO y se aplican fijos a
-     validación y prueba (así la proporción de cada banda puede cambiar con
-     el tiempo, que es lo que tiene que pasar si el equipo se degrada).
-        'natural'   K-means de 3 grupos sobre log(1 + N): los cortes caen
-                    donde los datos se separan solos (cortes naturales de
-                    Jenks). Es el que se defiende: nadie elige el percentil.
-        'terciles'  P33 y P67, como contraste.
-  3. El error del autoencoder como validación externa: ¿ordena las bandas?
-     Se mira en VALIDACIÓN y en PRUEBA por separado (PARCHE P14): la escala
-     se juzga en validación; prueba sólo confirma.
-  4. Anómalas para el autoencoder con N = 0: la lista para revisar.
-  5. K-means (k = 2..6) y DBSCAN sobre las ventanas que el autoencoder marca,
-     sin mirar las alarmas. Se ajustan en VALIDACIÓN y se miden en PRUEBA
-     contra las bandas de N (índice de Rand ajustado, ARI).
-  6. XGBoost (tanteo): ¿se reconoce la banda de N desde la señal, sin
-     extremos? Es la referencia supervisada para leer el agrupamiento.
-
-Entradas: {EQUIPO}_ventanas_W60.csv            (paso 02)
-          {EQUIPO}_activos_por_ventana_W60.csv (paso 02, PARCHE P11 v2)
-          {EQUIPO}_features_W60.csv            (paso 02)
-          {EQUIPO}_error_reconstruccion_W60.csv (paso 05)
-          {EQUIPO}_corte_split.json            (paso 01)
-          {EQUIPO}_w_sensores_W60.csv          (paso 02, opcional)
-          criticidad.py                        (misma carpeta de Drive)
-Si falta el archivo de activos (paso 02 sin el PARCHE P11 v2), N se calcula
-con los eventos que ARRANCAN o, si tampoco están, con MUESTRAS en alarma, y el
-script lo avisa: sirve para mirar, no para la memoria.
-
-El umbral del autoencoder es el del paso 05: P95 del error de las ventanas de
-validación SIN NINGUNA ALARMA (por muestras), no de las de N = 0 (PARCHE P13).
-
-Salidas: 10_nivel_ventanas.csv, 10_cortes.csv, 10_bandas_vs_error.csv,
-         10_anomalas_sin_alarma.csv, 10_agrupamiento.csv, 10_xgb.csv
-No entrena redes: corre en CPU en un par de minutos.
-=============================================================================
 """
 import os
 import sys
@@ -124,19 +54,11 @@ except ImportError:
 SEED = 42
 W = 60
 LLAVES = ['tramo_id', 'ventana_id']
-AE = 'err_AE_normales'          # checkpoint de pérdida mínima (PARCHE P8)
+AE = 'err_AE_normales'          # Checkpoint de pérdida mínima
 PERCENTIL_UMBRAL = 95           # umbral del autoencoder, normales de validación
 
-# Pesos por criticidad c (1 = la MÁS grave):
-#   lineal    peso = 4 - c        -> 3 / 2 / 1  (criticidad.PESO)
-#   empinada  peso = 3 ** (3 - c) -> 9 / 3 / 1  (cada nivel pesa el triple)
 ESCALAS = {'lineal': {c: 4 - c for c in (1, 2, 3)},
            'empinada': {c: 3 ** (3 - c) for c in (1, 2, 3)}}
-# PARCHE P14 -- la principal pasa a ser la empinada. Criterio de proceso: con
-# 3/2/1 una sola alarma de criticidad 1 (N = 3) queda bajo el corte leve/media
-# en los tres equipos; con 9/3/1 (N = 9) queda al menos en media. Comprobación
-# en VALIDACIÓN (sección 4): con 9/3/1 el error del autoencoder crece de nivel
-# en nivel en CR010, CR009 y CR011; con 3/2/1 se rompe en CR009 y CR011.
 ESCALA_PRINCIPAL = 'empinada'
 CORTE_PRINCIPAL = 'natural'
 NIVELES = ['1_leve', '2_media', '3_grave']
@@ -182,10 +104,6 @@ ventanas = pd.read_csv(ARCHIVO_VENTANAS, parse_dates=['timestamp_inicio',
 ids_reglas = [c for c in ventanas.columns if c in criticidad.CRITICIDAD]
 print(f'Ventanas: {len(ventanas):,} | reglas: {len(ids_reglas)}   <- esperado: 31')
 
-# PARCHE P13 -- n_j = episodios ACTIVOS en la ventana (arranquen en ella o
-# vengan de antes). Los que sólo ARRANCAN dejan en N = 0 las ventanas del
-# medio de una alarma larga: en la corrida del 18-oct (CR010) eran 287
-# ventanas de validación y 389 de prueba, casi todas con PEL alta sostenida.
 _fuente = next((f for f in [ARCHIVO_ACTIVOS, ARCHIVO_EVENTOS]
                 if os.path.exists(f)), None)
 if _fuente:
@@ -216,9 +134,6 @@ else:
 C = conteo[ids_reglas].astype(float).reset_index(drop=True)
 ventanas = ventanas.reset_index(drop=True)
 
-# PARCHE P13 -- "sin alarma" por MUESTRAS, la misma definición de normal del
-# paso 05 (etiqueta_ventana == 'normal'). El umbral y la lista de la sección 5
-# se apoyan en esto, no en N = 0.
 if 'total_alarmas_ventana' in ventanas.columns:
     ventanas['sin_alarma'] = ventanas.total_alarmas_ventana == 0
 else:
@@ -247,14 +162,6 @@ ventanas['conjunto_fecha'] = conjunto_por_fecha(ventanas.timestamp_inicio)
 
 # =============================================================================
 # 2. EL NIVEL N DE CADA VENTANA
-# =============================================================================
-# Colapso por niveles dentro de cada familia anidada. Las familias están
-# escritas de la condición más laxa a la más estricta (criticidad.py). Con
-# n_k las activaciones del nivel k, las que se quedaron en ese nivel son
-# n_k - n_(k+1): una presión que llegó a 500 activó D y A5, y cuenta una sola
-# vez, con el peso de A5. Sin esto, la misma condición física pesa 2 + 3.
-# Con MUESTRAS el colapso es exacto (anidamiento matemático); con EVENTOS es
-# una aproximación, porque un episodio de A5 casi siempre trae el suyo de D.
 # =============================================================================
 print('\n' + '=' * 72)
 print('2. EL NIVEL N = suma de peso x activaciones')
@@ -303,7 +210,7 @@ print(f'Ventanas con N = 0 pero alguna alarma activa: {_n0_con_alarma:,}   '
 print(ventanas.loc[ventanas.N_lineal > 0, ['N_lineal', 'N_empinada']]
       .describe(percentiles=[.25, .5, .75, .9, .99]).round(1).to_string())
 
-# El ejemplo del profesor, con estos pesos
+# Ejemplo con estos pesos
 print('\nEl ejemplo del profesor (una regla de criticidad 2 activada 20 veces')
 print('contra una de criticidad 1 activada una vez):')
 for esc, p in ESCALAS.items():
@@ -319,11 +226,7 @@ print('=' * 72)
 
 
 def cortes_naturales(x):
-    """K-means de 3 grupos en una dimensión, sobre log(1 + N).
-
-    Los cortes son los puntos medios entre centros vecinos: es el método de
-    cortes naturales de Jenks, que en una dimensión coincide con K-means.
-    """
+    """K-means de 3 grupos en una dimensión, sobre log(1 + N)."""
     z = np.log1p(x).reshape(-1, 1)
     km = KMeans(n_clusters=3, n_init=20, random_state=SEED).fit(z)
     c = np.sort(km.cluster_centers_.ravel())
@@ -366,7 +269,7 @@ print(cortes[['escala', 'metodo', 'corte_leve_media', 'corte_media_grave',
 if (cortes.corte_leve_media == cortes.corte_media_grave).any():
     print('  >> Hay cortes repetidos: N toma pocos valores y dos bandas se juntan.')
 
-# PARCHE P14 -- dónde cae una sola alarma grave contra varias menores
+# Dónde cae una sola alarma grave contra varias menores
 print('\n¿Dónde cae una ventana con UNA alarma de criticidad 1 (p. ej. A5) y una')
 print('con TRES alarmas de criticidad 3? (cortes naturales de cada escala)')
 for esc, p in ESCALAS.items():
@@ -390,9 +293,6 @@ print(pd.crosstab(ventanas.criticidad_min, ventanas[BANDA]).to_string())
 # =============================================================================
 # 4. VALIDACIÓN EXTERNA: ¿EL ERROR DEL AUTOENCODER ORDENA LAS BANDAS?
 # =============================================================================
-# El autoencoder nunca vio una alarma ni una criticidad. Si su error crece de
-# banda en banda, la escala de N tiene correlato en la física de la señal.
-# =============================================================================
 print('\n' + '=' * 72)
 print('4. EL ERROR DEL AUTOENCODER CONTRA LAS BANDAS (validación y prueba)')
 print('=' * 72)
@@ -405,8 +305,6 @@ d = err[LLAVES + ['conjunto', AE]].merge(ventanas, on=LLAVES, how='inner',
 d = d.rename(columns={AE: 'error_ae'})
 assert len(d) == len(err), 'El cruce con el paso 05 perdió ventanas.'
 
-# PARCHE P14 -- validación y prueba por separado. La escala se juzga en
-# VALIDACIÓN; prueba sólo confirma. Antes salían mezcladas.
 DATOS_ERR = {'validación': d.conjunto == 'val', 'prueba': d.conjunto == 'test',
              'validación + prueba': d.conjunto.isin(['val', 'test'])}
 filas_err = []
@@ -452,15 +350,6 @@ for col in dict.fromkeys([N_PRINC, 'N_lineal', 'N_empinada', 'n_reglas_activas',
 # =============================================================================
 # 5. ANÓMALAS PARA EL AUTOENCODER CON N = 0: LA LISTA PARA REVISAR
 # =============================================================================
-# OJO AL LEER: el umbral es el P95 del error de las normales de VALIDACIÓN,
-# así que en validación el 5 % de las ventanas sin alarma queda marcada POR
-# CONSTRUCCIÓN. Lo que informa no es cuántas son, sino dónde se juntan (fechas,
-# sensor) y si en prueba son más (deriva o algo que las reglas no ven).
-# PARCHE P13 -- el umbral sale de las ventanas SIN ALARMA por muestras (las
-# normales del paso 05), no de las de N = 0: con los eventos que arrancan, las
-# N = 0 incluían ventanas en medio de alarmas largas y el umbral salía 0.68 en
-# vez de 0.0141 (CR010), así que se marcaba el 5 % de lo que se debía.
-# =============================================================================
 print('\n' + '=' * 72)
 print('5. EL AUTOENCODER DICE ANÓMALA Y N = 0')
 print('=' * 72)
@@ -494,20 +383,6 @@ sin_alarma.sort_values('error_ae', ascending=False)[cols_lista].to_csv(
 
 # =============================================================================
 # 6. NO SUPERVISADO: K-MEANS Y DBSCAN SOBRE LAS QUE MARCA EL AUTOENCODER
-# =============================================================================
-# Se agrupan TODAS las marcadas (también las de N = 0), sin mirar alarmas. Se
-# ajusta en validación y prueba se asigna sin reajustar. La comparación con las
-# bandas de N (ARI: 0 = azar, 1 = mismos grupos) se hace sobre las de N > 0.
-# Dos representaciones de la ventana:
-#   SIN_EXTREMOS  media, desviación y delta de los 14 sensores (42), las de la
-#                 Fase B: sin máximos ni mínimos para no copiar las reglas.
-#   W_SENSORES    el índice W de los 14 sensores, cuán lejos de lo normal está
-#                 la distribución de cada uno.
-# Antes de agrupar, cada representación se estandariza y se reduce con PCA
-# (componentes hasta el 80 % de la varianza, máximo 10), ajustado en
-# validación. DBSCAN se basa en distancias, y en 42 dimensiones todas las
-# distancias se parecen: sin reducir, junta todo en un solo grupo. K-means
-# trabaja en el mismo espacio para que la comparación sea pareja.
 # =============================================================================
 print('\n' + '=' * 72)
 print('6. AGRUPAMIENTO NO SUPERVISADO DE LAS VENTANAS MARCADAS')
@@ -549,8 +424,6 @@ def comparar(lab, banda):
 
 
 def asignar_dbscan(modelo, X_ajuste, X_nuevo, eps):
-    """Prueba se asigna al grupo del punto núcleo más cercano, si está a menos
-    de eps; si no, es ruido (-1). DBSCAN no tiene predict."""
     nucleos = modelo.core_sample_indices_
     if len(nucleos) == 0:
         return np.full(len(X_nuevo), -1)
@@ -592,8 +465,6 @@ for rep, cols in REPRES.items():
             _t['grupo'] = l_te
             tablas_k3[rep] = _t
 
-    # DBSCAN: min_samples = 2 x dimensiones (regla de Sander et al., 1998);
-    # eps en cuantiles de la distancia al vecino número min_samples.
     ms = 2 * Xva.shape[1]
     kd = NearestNeighbors(n_neighbors=ms).fit(Xva).kneighbors(Xva)[0][:, -1]
     for q in DBSCAN_CUANTILES_EPS:
@@ -640,11 +511,6 @@ for rep, _t in tablas_k3.items():
 
 # =============================================================================
 # 7. XGBOOST, POR TANTEAR: ¿SE RECONOCE LA BANDA DE N DESDE LA SEÑAL?
-# =============================================================================
-# Es la referencia supervisada para leer el agrupamiento: si XGBoost reconoce
-# bien la banda y K-means no la encuentra, los niveles se pueden aprender pero
-# no forman grupos naturales. Entrena en validación, se mide en prueba, con
-# las 42 variables sin extremos. Sólo ventanas marcadas con N > 0.
 # =============================================================================
 print('\n' + '=' * 72)
 print(f'7. {"XGBOOST" if HAY_XGB else "RANDOM FOREST (no hay xgboost)"}: '

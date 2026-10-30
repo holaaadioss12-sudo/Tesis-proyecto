@@ -3,57 +3,6 @@
 =============================================================================
 PASO 10c — ¿LOS NIVELES TIENEN SENTIDO FÍSICO EN EL CIRCUITO DE LUBRICACIÓN?
 =============================================================================
-Lo pidió el profesor en la reunión del 16-oct:
-
-    "Me gustaría que tuviéramos súper claro la parte hidráulica ... si los
-     resultados de leve, medio, alto, al mirar el comportamiento hidráulico de
-     todas estas cosas, de las temperaturas, de todo el circuito, tiene
-     sentido. ¿Qué pasa cuando las temperaturas del fluido suben, bajan? ¿Qué
-     pasa con la viscosidad? ... ¿Cuál es la causa de la alarma? El fenómeno
-     físico."
-
-El nivel de cada ventana ya lo asigna el paso 10 (N = suma de peso x
-activaciones, cortado en leve / media / grave). Este paso no clasifica nada:
-describe, con las variables en sus unidades, cómo se ve el circuito en cada
-nivel, para poder contrastarlo con la física. No entrena modelos.
-
-  1. Perfil físico por nivel: mediana y rango intercuartil de presión de
-     entrada de aceite (PEL), presión diferencial del filtro (PDF),
-     temperaturas del aceite (entrada T2, estanque T5, retorno T1), calor que
-     se lleva el aceite (T1 - T2), temperaturas de componentes (T7 buje,
-     T8 socket liner, T9 contraeje), corriente (CM) y vibración máxima.
-     Spearman de cada variable con el nivel (0 = normal ... 3 = grave): ¿la
-     variable cambia de forma ordenada de nivel en nivel?
-     Se calcula con las dos escalas de pesos (empinada 9/3/1, la principal
-     desde el PARCHE P14 del paso 10, y lineal 3/2/1)
-     en ENTRENAMIENTO + VALIDACIÓN, que es donde se decide; prueba se reporta
-     aparte, como confirmación.
-  2. A5 (PEL > 450, "línea muy obstruida", criticidad 1) contra D sin A5
-     (PEL 350-450) y contra las ventanas sin alarma: temperaturas, presiones y
-     cuánto ocurre en la primera media hora de cada tramo continuo de
-     operación (después de una detención o de un corte en los datos).
-  3. Viscosidad: PEL según la temperatura del aceite de entrada (T2). Con un
-     caudal parecido, un aceite más frío es más viscoso y necesita más presión
-     para pasar por las mismas líneas (flujo laminar: la caída de presión es
-     proporcional a la viscosidad). Si PEL baja cuando T2 sube, el dato es
-     coherente con esa explicación; no la prueba, porque no se mide el caudal.
-  4. Tendencia mensual: % de ventanas con A5, y PEL, PDF y T2 en las ventanas
-     sin ninguna alarma (la línea base del circuito, mes a mes), más la
-     corriente de todas las ventanas (cuánto se cargó el chancador ese mes).
-  5. Carga (agregado tras la primera corrida en CR010, donde A5 salió con la
-     misma T2 que las ventanas sin alarma pero con menos corriente y el buje
-     más frío): PEL y % de A5 por quintil de corriente, el mismo % dentro de
-     cada tercil de T2, y Spearman de PEL con T7 y con T2 a carga parecida.
-     Si A5 sube cuando baja la corriente aun con T2 fija, la alarma va con el
-     chancador poco cargado y no con el aceite frío que entra.
-
-Entradas: {EQUIPO}_features_W60.csv              (paso 02: 70 estadísticos)
-          {EQUIPO}_activos_por_ventana_W60.csv   (paso 02, PARCHE P11 v2)
-          10_nivel_ventanas.csv                  (paso 10)
-Salidas:  10c_perfil_por_nivel.csv, 10c_a5.csv, 10c_pel_vs_t2.csv,
-          10c_carga.csv, 10c_carga_por_t2.csv, 10c_mensual.csv,
-          10c_perfil_niveles.png, 10c_pel_vs_temperatura.png, 10c_carga.png
-=============================================================================
 """
 import os
 
@@ -94,7 +43,6 @@ N_BINS_CM = 5                   # quintiles de corriente (carga)
 UMBRAL_D, UMBRAL_A5 = 350, 450  # reglas D y A5 sobre PEL (reglas_engine.py)
 MIN_RHO = 0.10                  # tendencia mínima para llamarla ordenada
 
-# Variables del perfil: nombre en la tabla -> cómo se calcula desde features
 PERFIL = {
     'PEL media (presión entrada aceite)': 'PEL_media',
     'PEL máxima': 'PEL_max',
@@ -178,8 +126,6 @@ def perfil(x, banda):
             fila[f'{nv}_iqr'] = f'{q1:.1f} – {q3:.1f}'
         dif = np.diff(med.to_numpy())
         rho = spearmanr(orden, x[nombre], nan_policy='omit').correlation
-        # ordenada: la mediana avanza en el mismo sentido en los tres pasos y
-        # la tendencia no es despreciable (|Spearman| >= MIN_RHO)
         fila['ordenada'] = ('no' if abs(rho) < MIN_RHO else
                             'sube' if (dif > 0).all() else
                             'baja' if (dif < 0).all() else 'no')
@@ -344,7 +290,7 @@ def ejes(a):
 _ver = ['PEL media (presión entrada aceite)', 'PDF media (ΔP filtro)',
         'T2 media (aceite entrada)', 'T1 - T2 (calor que se lleva el aceite)',
         'T7 media (buje excéntrico)', 'CM media (corriente)']
-_banda = ESCALAS['empinada (9/3/1)']   # PARCHE P14
+_banda = ESCALAS['empinada (9/3/1)']
 _dv = d[d.decision == 'entrenamiento + validación']
 fig, axs = plt.subplots(2, 3, figsize=(12, 6.4), facecolor=FONDO)
 for a, var in zip(axs.ravel(), _ver):
@@ -395,8 +341,6 @@ fig.tight_layout()
 fig.savefig(salida('10c_pel_vs_temperatura.png'), dpi=160, facecolor=FONDO)
 plt.close(fig)
 
-# 6c. A5 según la carga: por quintil de corriente dentro de cada tercil de T2,
-#     y mes a mes contra la corriente del mes
 MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct',
          'nov', 'dic']
 COLOR_T2 = {'T2 baja': '#104281', 'T2 media': '#2a78d6', 'T2 alta': '#86b6ef'}

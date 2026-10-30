@@ -3,73 +3,12 @@
 =============================================================================
 PASO 04d — CONFIRMACIÓN CON VARIAS SEMILLAS
 =============================================================================
-Lo pidió el profesor:
-
-  "lo de la mejora de hiperparámetros, ir viendo cuál es mejor y favorece
-   al autoencoder"
-
-El 04c probó 7 configuraciones con UNA sola semilla y 12 épocas. Eso alcanza
-para ver una dirección, no para afirmar que una configuración es mejor: con
-una sola corrida no se puede distinguir una mejora real del azar de la
-inicialización de los pesos.
-
-Este script toma las TRES configuraciones que importan y las corre con
-3 semillas y 20 épocas (las de producción), para poder decir "mejor en
-promedio, con esta dispersión" en vez de "mejor en una corrida".
-
-  base (la actual)   d_model 64, 2 capas   <- la que hay que superar
-  d_model = 32       la mejor del 04c (+17 %), con 1/4 de los parámetros
-  capas = 3          la segunda (+7 %)
-
-Entradas: CR010_limpio.csv       (paso 01)
-          reglas_engine.py
-Salidas:  04d_confirmacion_semillas.csv    (una fila por corrida, se escribe
-                                            DESPUÉS DE CADA UNA)
-          04d_resumen.csv                  (promedio y dispersión por config)
-
-NO toca el paso 04 ni sus checkpoints. Es un experimento aparte.
-Tiempo estimado: ~15 minutos con GPU.
-
-POR QUÉ SE MIDEN CUATRO COSAS Y NO UNA
---------------------------------------
-El 04c reportaba una sola métrica: la razón entre la mediana del error en
-ventanas anómalas y la mediana en normales. Tiene dos problemas:
-
-  1. Al ser una razón de medianas, ignora por completo la cola. Y la cola es
-     justamente donde están los episodios graves. La razón de MEDIAS da un
-     número muy distinto (12,44 contra 5,73 en el modelo de producción)
-     porque la distribución del error anómalo es muy asimétrica.
-  2. Ninguna de las dos dice cuánto se detecta a un umbral dado, que es lo
-     que al final importa operativamente.
-
-Por eso acá se reportan cuatro:
-  separacion_mediana   la del 04c, para poder comparar con lo ya hecho
-  separacion_media     la misma razón pero con medias, sensible a la cola
-  auc                  probabilidad de que una ventana anómala tenga más
-                       error que una normal tomada al azar. No depende de
-                       ningún umbral. 0,5 es azar, 1,0 es perfecto.
-  recall_al_10pct      qué fracción de las anómalas se detecta fijando el
-                       umbral en el percentil 90 de las normales, o sea
-                       aceptando 10 % de falsas alarmas. Es el P90 que ya
-                       se usa, traducido a "cuánto agarra".
-
-Si las cuatro apuntan en la misma dirección, la conclusión es sólida. Si se
-contradicen, hay que mirar por qué antes de cambiar nada.
-=============================================================================
 """
 
 from google.colab import drive
 drive.mount('/content/drive')
 RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 
-# PARCHE EQUIPO -- el mismo pipeline para CR009, CR010 y CR011.
-# El equipo se elige con la variable de entorno EQUIPO. En Colab, una celda
-#     import os; os.environ['EQUIPO'] = 'CR009'
-# antes de correr. Sin ella es CR010, y CR010 sigue leyendo y escribiendo en
-# la carpeta raiz, igual que antes, para no mover nada de lo ya hecho. Los
-# otros equipos trabajan en su propia subcarpeta: si no, sobrescribirian los
-# modelos y resultados de CR010 (autoencoder_W60_*.pt, normalizador_W60.npz,
-# B1_*, 06_*, 04c_* no llevan el nombre del equipo).
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
@@ -99,18 +38,10 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12
 STRIDE_EVAL = W
-# PARCHE 2 -- se entrena COMO EL PASO 04 DE PRODUCCIÓN: hasta 100 épocas con
-# early stopping (paciencia 15) sobre la pérdida en las ventanas normales de
-# validación. Con un número fijo y corto de épocas el experimento medía qué
-# configuración aprende más RÁPIDO, no cuál reconstruye MEJOR; el modelo de
-# producción llegó a su mínimo recién en la época 93.
 EPOCAS_MAX = 100
 PACIENCIA = 15
 SEMILLAS = [42, 7, 2024]
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
-# PARCHE 1b -- archivos de salida NUEVOS (_v2). Estos scripts retoman desde
-# su CSV si ya existe: con el nombre viejo se saltarían todas las corridas y
-# devolverían los resultados del corte 70/15/15. Los viejos quedan como estaban.
 ARCHIVO_SALIDA = f'{RUTA_EQ}/04d_confirmacion_semillas_v2.csv'
 ARCHIVO_RESUMEN = f'{RUTA_EQ}/04d_resumen_v2.csv'
 
@@ -118,9 +49,6 @@ VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
 BASE = {'lr': 1e-3, 'num_layers': 2, 'd_model': 64, 'nhead': 4, 'dim_ff': 128}
-# PARCHE 3 -- las dos configuraciones a confirmar salen del 04c NUEVO (v2),
-# no de las del 04c viejo (d_model = 32 y capas = 3), que se eligieron con el
-# corte 70/15/15 y 12 épocas. Se toman las dos de menor error en normales.
 ARCHIVO_04C = f'{RUTA_EQ}/04c_barrido_hiperparametros_v2.csv'
 if not os.path.exists(ARCHIVO_04C):
     raise SystemExit(f'Falta {ARCHIVO_04C}: correr primero el 04c parchado.')
@@ -155,18 +83,7 @@ df = cargar_limpio(ARCHIVO_LIMPIO)
 VARIABLES = [v for v in VARIABLES if v in df.columns]
 print(f'Filas: {len(df):,}   Variables: {len(VARIABLES)}')
 
-# PARCHE 1 -- MISMAS VENTANAS NORMALES Y MISMO CORTE QUE EL PASO 04
 # -----------------------------------------------------------------------------
-# ANTES: las reglas se evaluaban sobre el dataframe entero y el corte era el
-# 70/15/15 de la CANTIDAD de tramos. El paso 04 de producción hace otra cosa:
-#   - evalúa las reglas TRAMO POR TRAMO: una regla con ventana móvil no debe
-#     "ver" a través de un hueco de datos, y eso cambia qué ventana es normal;
-#   - corta por FECHA con T_train y T_val de CR010_corte_split.json
-#     (PARCHE 2 del pipeline), el mismo corte del normalizador y de la Fase B.
-# Con el corte viejo este experimento entrenaba y validaba sobre períodos
-# distintos a los del modelo que se defiende, y sus números no se podían
-# comparar con él. Ahora las ventanas normales, el período de entrenamiento
-# y el de validación son exactamente los del paso 04.
 import json
 _corte = json.load(open(f'{RUTA_EQ}/{EQUIPO}_corte_split.json'))
 _T_TRAIN, _T_VAL = pd.Timestamp(_corte['T_train']), pd.Timestamp(_corte['T_val'])
@@ -281,7 +198,7 @@ def errores(modelo, X, batch=256):
 
 
 def auc_mann_whitney(e_norm, e_anom):
-    """AUC sin sklearn: el estadístico U normalizado. Empates valen 0,5."""
+    """AUC sin sklearn: el estadístico U normalizado."""
     todos = np.concatenate([e_norm, e_anom])
     rangos = pd.Series(todos).rank(method='average').to_numpy()
     r_anom = rangos[len(e_norm):].sum()
@@ -330,10 +247,6 @@ def entrenar(cfg, semilla):
         e_n = errores(modelo, X_va_n)
         m = metricas(e_n, errores(modelo, X_va_a))
         m['perdida_val'] = float(e_n.mean())
-        # PARCHE 4 -- el checkpoint es el de MÍNIMA pérdida en normales de
-        # validación, como en el 04c parchado (antes: máxima separación). La
-        # pregunta es si el error de reconstrucción mejora; cuál criterio de
-        # checkpoint conviene lo responde el 04e, no este script.
         if mejor is None or m['perdida_val'] < mejor['perdida_val'] - 1e-5:
             mejor = dict(m, epoca=ep, perdida_train=perdida)
             espera = 0
@@ -375,10 +288,6 @@ print('=' * 72)
 
 if os.path.exists(ARCHIVO_SALIDA):
     hechas = pd.read_csv(ARCHIVO_SALIDA, sep=';', decimal=',')
-    # PARCHE P10 -- la clave de lo ya hecho incluye el corte. Antes era solo
-    # (configuración, semilla): una corrida guardada con otro corte se habría
-    # reutilizado sin aviso. Las filas sin la columna T_train son de este mismo
-    # archivo _v2, creado junto con el corte del JSON, y se aceptan con aviso.
     if 'T_train' in hechas.columns:
         _otro = hechas.T_train.notna() & (hechas.T_train.astype(str) != str(_T_TRAIN))
         if _otro.any():
@@ -400,7 +309,7 @@ for cfg in CONFIGS:
             continue
         print(f'\n--- {cfg["nombre"]} · semilla {s} ---')
         fila = entrenar(cfg, s)
-        fila['T_train'] = str(_T_TRAIN)                          # PARCHE P10
+        fila['T_train'] = str(_T_TRAIN)
         hechas = pd.concat([hechas, pd.DataFrame([fila])], ignore_index=True)
         hechas.to_csv(ARCHIVO_SALIDA, sep=';', decimal=',', index=False,
                       encoding='utf-8-sig')
@@ -450,7 +359,6 @@ print(f'Guardado: {ARCHIVO_RESUMEN}')
 print('\nREGLA DE DECISIÓN: solo cambiar la configuración si la mejora supera')
 print('2 veces la dispersión EN AUC y EN recall. Si solo mejora la separación')
 print('pero no el AUC, no es una mejora de detección: es un cambio de escala.')
-# PARCHE 5 -- igual que en el 04c: esto se corrió después de mirar prueba.
 print('\nAun si alguna configuración pasa esa regla, el modelo de producción NO')
 print('cambia: prueba ya se miró. Se reporta como sensibilidad, y una mejora')
 print('clara queda como recomendación para un reentrenamiento futuro.')

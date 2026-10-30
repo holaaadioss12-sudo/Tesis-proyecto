@@ -3,46 +3,6 @@
 =============================================================================
 criticidad.py  (v2)  -  la tabla experta, transcrita de criticidadCH8.xlsx
 =============================================================================
-Guardar en /content/drive/MyDrive/tesis_chancadores/ junto a reglas_engine.py.
-
-El paso 02 tiene hoy CRITICIDAD_REGLAS = {} con el comentario de que la tabla
-"no existe todavia (pendiente con el profesor)". Si existe: es criticidadCH8.xlsx,
-en la misma carpeta de Drive que los CSV. Trae criticidad, componente y modo de
-falla para los 32 IDs.
-
-OJO CON LA ESCALA: va al reves de lo intuitivo.
-    criticidad 1 = MAS grave     peso 3
-    criticidad 2 = media         peso 2
-    criticidad 3 = MENOS grave   peso 1
-El peso es 4 - criticidad, para poder agregar.
-
-Y OJO CON EL ANIDAMIENTO: las reglas no son excluyentes. Una muestra de T1 a
-61 grados activa K (>50), A15 (>53) y A14 (>60) a la vez. La criticidad de la
-ventana es la de su regla MAS grave -- el MINIMO numero -- nunca la suma: si se
-suman los pesos de reglas anidadas, una sola condicion fisica se cuenta tres
-veces y la ventana aparece artificialmente grave.
-
-QUE CAMBIA EN LA v2
------------------------------------------------------------------------------
-1. test_equivalencia(). El colapso por familias se verifica con casos
-   sinteticos de numero conocido, no de palabra. Tres assert duros. Son
-   milisegundos y los numeros que imprime van a la memoria.
-
-2. COLAPSAR_B_CON_A, y verificar_anidamiento() para decidirlo CON DATOS.
-   FAMILIAS_ANIDADAS esta escrito a mano leyendo los umbrales del diccionario
-   de alertas. Eso funciona para las familias obvias -- tres cortes sobre la
-   misma T1 -- pero A y B describen el mismo evento fisico visto por dos tags
-   ("Bloqueo mecanico / Sobrecarga" y "Atollo / Material excesivo"), y si en
-   los datos B nunca se activa sin A, tratarlas como independientes duplica el
-   peso de un solo atollo. NO lo doy por cierto: el flag queda en False y
-   verificar_anidamiento() mide la co-ocurrencia real sobre tus ventanas y dice
-   si corresponde prenderlo. Decision explicita y medida, no implicita.
-
-3. REGLAS_COMPUESTAS. La tabla del profesor tiene 35 filas: 32 reglas base mas
-   tres combinaciones (A+A6, A15+E, A+O). El motor no las evalua. Quedan aqui
-   declaradas para que el trabajo futuro sepa exactamente que falta, y
-   cobertura_compuestas() te dice cuantas ventanas las cumplirian hoy.
-=============================================================================
 """
 
 import numpy as np
@@ -113,12 +73,6 @@ FALLA = {
 }
 
 # --- familias anidadas -------------------------------------------------------
-# Dentro de cada familia las reglas se disparan en cascada: una muestra que
-# cumple la mas estricta cumple tambien todas las anteriores. Para agregar por
-# peso hay que colapsar cada familia a su regla mas grave primero.
-#
-# Estas nueve salen de leer los umbrales: son cortes sucesivos sobre LA MISMA
-# variable, asi que el anidamiento es matematico y no hace falta medirlo.
 FAMILIAS_ANIDADAS = {
     'T7_absoluta':   ['F', 'A7', 'A6'],            # >69, >70, >75
     'T7_diferencia': ['A10', 'A9', 'A8'],          # >30, >32, >56 sobre T1
@@ -132,22 +86,6 @@ FAMILIAS_ANIDADAS = {
 }
 
 # --- la decima familia, la que NO es matematica -------------------------------
-# A  = "Bloqueo mecanico / Sobrecarga / Material muy duro"   (criticidad 2)
-# B  = "Atollo / Material excesivo o compactacion"           (criticidad 1)
-#
-# Son dos tags distintos describiendo el mismo evento de proceso: el chancador
-# atorado. Si en los datos B practicamente no aparece sin A, sumar los dos
-# pesos cuenta un solo atollo dos veces y la ventana queda mas grave de lo que
-# es. Pero eso es una AFIRMACION SOBRE LOS DATOS, no sobre los umbrales, asi
-# que no se decide leyendo el diccionario de alertas: se mide.
-#
-# Queda en False a proposito. Corre verificar_anidamiento() sobre tus ventanas,
-# mira la columna P(B | A) y su reciproca, y prendelo solo si la medicion lo
-# sostiene. Si lo prendes, el numero medido va a la memoria junto al cambio.
-#
-# Nota: esto afecta UNICAMENTE a peso_agregado(). criticidad_min es un minimo,
-# y un minimo no se altera por contar dos veces -- la banda de severidad que
-# usa el autoencoder no cambia en ningun caso.
 COLAPSAR_B_CON_A = False
 FAMILIA_B_A = ['B', 'A', 'A1']     # orden irrelevante: colapsa por criticidad
 
@@ -162,15 +100,9 @@ def familias_activas():
 
 
 # --- reglas marcadas TRIP en el diccionario de alertas -----------------------
-# Sirven como referencia R2 para medir anticipacion: son la condicion mas grave
-# que la planta reconoce, y las tres tienen criticidad 1.
 REGLAS_TRIP = ['L', 'A8', 'A11']
 
 # --- las tres filas de la tabla que el motor no evalua -----------------------
-# criticidadCH8.xlsx tiene 35 filas: 32 reglas base + 3 combinaciones. El motor
-# de reglas evalua condiciones de una variable, asi que estas tres quedan
-# fuera. Declaradas aqui para que el capitulo de trabajo futuro sea concreto y
-# para poder medir cuanto se esta dejando sobre la mesa.
 REGLAS_COMPUESTAS = {
     'A+A6':  {'miembros': ['A', 'A6'],  'criticidad': 1,
               'componente': 'eje_principal',
@@ -187,21 +119,14 @@ BANDA = {1: '3_grave', 2: '2_media', 3: '1_leve', 4: '0_normal'}
 
 
 def criticidad_de_ventana(fila, ids_reglas):
-    """La criticidad de la regla mas grave activa. 4 = ninguna activa."""
+    """La criticidad de la regla mas grave activa."""
     act = [CRITICIDAD[r] for r in ids_reglas
            if r in CRITICIDAD and fila[r] > 0]
     return min(act) if act else 4
 
 
 def peso_agregado(fila, ids_reglas, colapsar=True):
-    """Suma de pesos colapsando antes cada familia anidada.
-
-    Sin el colapso, T1 a 61 grados aporta 1+2+3 = 6 por una sola condicion.
-    Con el colapso aporta 3, que es el peso de A14.
-
-    colapsar=False existe para poder reportar las dos columnas lado a lado:
-    el contraste es la evidencia de por que el colapso hace falta.
-    """
+    """Suma de pesos colapsando antes cada familia anidada."""
     activas = {r for r in ids_reglas if r in CRITICIDAD and fila[r] > 0}
     if colapsar:
         for miembros in familias_activas().values():
@@ -248,22 +173,12 @@ def anotar_ventanas(ventanas, ids_reglas):
 
 
 def comparar_escalas(ventanas):
-    """Matriz entre la escala experta y la de numero de reglas activas.
-
-    El acuerdo entre las dos es lo que compensa la limitacion declarada de la
-    tabla -- elicitacion de un solo experto, no conversada con operadores.
-    El desacuerdo tambien es un hallazgo: significa que contar subsistemas
-    comprometidos y pesar por consecuencia no son lo mismo.
-    """
+    """Matriz entre la escala experta y la de numero de reglas activas."""
     return pd.crosstab(ventanas.banda_severidad, ventanas.banda_criticidad)
 
 
 def sensibilidad_por_regla(ventanas, ids_reglas):
-    """Cuantas ventanas volverian a ser normales si se excluyera cada regla.
-
-    Si una sola regla esta descalificando varios miles de ventanas, el material
-    de entrenamiento del autoencoder lo esta decidiendo esa regla y no la fisica.
-    """
+    """Cuantas ventanas volverian a ser normales si se excluyera cada regla."""
     M = ventanas[ids_reglas].to_numpy() > 0
     base = int((M.sum(axis=1) == 0).sum())
     filas = []
@@ -282,20 +197,7 @@ def sensibilidad_por_regla(ventanas, ids_reglas):
 # verificar_anidamiento  --  para decidir COLAPSAR_B_CON_A con datos
 # =============================================================================
 def verificar_anidamiento(ventanas, ids_reglas, umbral=0.95):
-    """Mide la co-ocurrencia de cada par de una familia declarada, y de B/A.
-
-    COMO LEERLO. Para un par (x, y) con y mas grave que x, el anidamiento
-    matematico implica P(x | y) = 1: si se cumple el corte estricto, el laxo
-    tambien. Las nueve familias de FAMILIAS_ANIDADAS tienen que dar 1,000 en
-    esa columna; si alguna no da 1, el umbral que tengo escrito en el
-    comentario no es el que usa reglas_engine.py y hay que revisarlo ANTES de
-    seguir -- ese es el verdadero valor de esta funcion.
-
-    Para B y A no hay anidamiento matematico, asi que la pregunta es empirica:
-    si P(A | B) sale por encima del umbral, B casi nunca se activa sin A y
-    sumar los dos pesos cuenta el mismo atollo dos veces. Ahi corresponde
-    prender COLAPSAR_B_CON_A, dejando escrito el numero medido.
-    """
+    """Mide la co-ocurrencia de cada par de una familia declarada, y de B/A."""
     pres = {r: (ventanas[r].to_numpy() > 0) for r in ids_reglas
             if r in CRITICIDAD}
     filas = []
@@ -361,12 +263,7 @@ def verificar_anidamiento(ventanas, ids_reglas, umbral=0.95):
 # cobertura_compuestas  --  cuanto cuestan las tres filas que el motor no ve
 # =============================================================================
 def cobertura_compuestas(ventanas, ids_reglas):
-    """Cuantas ventanas cumplirian cada regla compuesta, y si cambiarian de banda.
-
-    Sirve para que el capitulo de trabajo futuro diga un numero en vez de "no
-    se implementaron". Si las tres juntas afectan a 40 ventanas de 20.000, la
-    omision es intrascendente y se puede escribir asi, con respaldo.
-    """
+    """Cuantas ventanas cumplirian cada regla compuesta, y si cambiarian de banda."""
     filas = []
     for nombre, d in REGLAS_COMPUESTAS.items():
         miembros = [r for r in d['miembros'] if r in ids_reglas]
@@ -399,12 +296,7 @@ def cobertura_compuestas(ventanas, ids_reglas):
 # test_equivalencia  --  tres assert, milisegundos, numeros para la memoria
 # =============================================================================
 def test_equivalencia(verbose=True):
-    """Verifica el colapso por familias con casos de valor conocido a mano.
-
-    No comprueba que la tabla del profesor sea correcta -- eso no es
-    verificable desde aqui. Comprueba que el CODIGO hace lo que dice el
-    parrafo del anidamiento, que es lo que se puede comprobar.
-    """
+    """Verifica el colapso por familias con casos de valor conocido a mano."""
     ids = list(CRITICIDAD.keys())
 
     def fila(activas):
@@ -422,7 +314,6 @@ def test_equivalencia(verbose=True):
     assert ps == 6, f'T1=61: peso sin colapsar {ps}, esperaba 6 (1+2+3)'
     casos.append(('T1 = 61 C  (K, A15, A14)', crit, pc, ps))
 
-    # CASO 2 -- vibracion a 41 mm/s: O (>16), A20 (>20), A19 (>34), A18 (>40).
     f = fila({'O', 'A20', 'A19', 'A18'})
     crit = criticidad_de_ventana(f, ids)
     pc = peso_agregado(f, ids, colapsar=True)
@@ -432,9 +323,6 @@ def test_equivalencia(verbose=True):
     assert ps == 9, f'vib=41: peso sin colapsar {ps}, esperaba 9 (1+2+3+3)'
     casos.append(('vib = 41 mm/s  (O, A20, A19, A18)', crit, pc, ps))
 
-    # CASO 3 -- dos familias distintas activas: NO se colapsan entre si.
-    # T1 a 61 y vibracion a 41 al mismo tiempo son dos condiciones fisicas
-    # independientes y tienen que sumar 3 + 3 = 6.
     f = fila({'K', 'A15', 'A14', 'O', 'A20', 'A19', 'A18'})
     pc = peso_agregado(f, ids, colapsar=True)
     assert pc == 6, f'dos familias: peso colapsado {pc}, esperaba 6 (3+3)'
@@ -474,26 +362,6 @@ def test_equivalencia(verbose=True):
 # =============================================================================
 # Como usarlo en el paso 02, reemplazando el bloque 5b
 # =============================================================================
-#   from criticidad import (anotar_ventanas, comparar_escalas,
-#                           sensibilidad_por_regla, verificar_anidamiento,
-#                           cobertura_compuestas, test_equivalencia)
-#
-#   test_equivalencia()                                  # primero, son ms
-#
-#   ventanas['n_reglas_activas'] = (ventanas[ids_reglas] > 0).sum(axis=1)
-#   ventanas['banda_severidad']  = ventanas.n_reglas_activas.apply(asignar_banda)
-#   ventanas = anotar_ventanas(ventanas, ids_reglas)
-#
-#   verificar_anidamiento(ventanas, ids_reglas)          # decide el flag
-#   cobertura_compuestas(ventanas, ids_reglas)           # trabajo futuro
-#   print(comparar_escalas(ventanas).to_string())
-#   print(sensibilidad_por_regla(ventanas, ids_reglas).head(10).to_string(index=False))
-#
-# Y en el paso 03, la ablacion que si prueba lo que dice probar:
-#   FEATURES_SIN_EXTREMOS = [f for f in FEATURES
-#                            if not f.endswith(('_max', '_min'))]   # 42 de 70
-# Sacar solo CM_max y PEL_max deja dentro T1_max, T7_max, V1_max... que son
-# literalmente las condiciones de la veintena de reglas restantes.
 
 if __name__ == '__main__':
     test_equivalencia()
