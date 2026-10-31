@@ -85,7 +85,7 @@ ids_reglas = [c for c in ventanas.columns if c in criticidad.CRITICIDAD]
 cols_err = [c for c in ('err_AE_normales_sep', 'err_AE_normales')
             if c in err.columns]
 if not cols_err:
-    raise SystemExit(f'El paso 05 no trae columnas err_AE_*: {list(err.columns)}')
+    raise SystemExit(f'El paso 04 no trae columnas err_AE_*: {list(err.columns)}')
 
 LLAVES = ['tramo_id', 'ventana_id']
 medias = [f'{v}_media' for v in VARIABLES]
@@ -100,7 +100,7 @@ d = (ventanas[ventanas.tramo_id.isin(tramos_eval)]
      .sort_values(LLAVES).reset_index(drop=True))
 sin_error = int(d[cols_err[0]].isna().sum())
 assert sin_error == 0, (f'{sin_error} ventanas de tramos de val/test sin error '
-                        f'de reconstrucción: el paso 05 no las evaluó todas.')
+                        f'de reconstrucción: el paso 04 no las evaluó todas.')
 
 _salto = d.groupby('tramo_id').ventana_id.diff().dropna()
 assert (_salto == 1).all(), 'ventana_id no es contiguo dentro de algún tramo'

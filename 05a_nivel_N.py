@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-PASO 10 — NIVEL DE ANOMALÍA POR CRITICIDAD Y FRECUENCIA, Y AGRUPAMIENTO
+PASO 05a — NIVEL DE ANOMALÍA N: CRITICIDAD Y FRECUENCIA, CORTES Y AGRUPAMIENTO
 =============================================================================
 """
 import os
@@ -92,7 +92,7 @@ def salida(nombre):
 # 1. CARGA
 # =============================================================================
 print('=' * 72)
-print(f'PASO 10 — NIVEL DE ANOMALÍA Y AGRUPAMIENTO (W = {W})')
+print(f'PASO 05a — NIVEL DE ANOMALÍA N (W = {W})')
 print('=' * 72)
 
 corte = json.load(open(ARCHIVO_CORTE))
@@ -113,21 +113,21 @@ if _fuente:
               .reindex(columns=LLAVES + ids_reglas).fillna(0))
     if _fuente == ARCHIVO_ACTIVOS:
         CONTEO = 'activos'
-        print('n_j = episodios ACTIVOS en la ventana (PARCHE P11 v2 del paso 02).')
+        print('n_j = episodios ACTIVOS en la ventana (paso 02).')
     else:
         CONTEO = 'iniciados'
         print('\n' + '!' * 72)
         print(f'No está {os.path.basename(ARCHIVO_ACTIVOS)}: n_j = eventos que')
         print('ARRANCAN en la ventana. Las ventanas del medio de una alarma larga')
         print('quedan con N = 0. Sirve para mirar, NO para la memoria: corre de')
-        print('nuevo paso_02_eventos.py (trae el PARCHE P11 v2).')
+        print('nuevo 02_reglas_ventanas.py.')
         print('!' * 72)
 else:
     conteo = ventanas[LLAVES + ids_reglas].copy()
     CONTEO = 'muestras'
     print('\n' + '!' * 72)
     print(f'No está {os.path.basename(ARCHIVO_EVENTOS)}: el paso 02 se corrió')
-    print('sin el PARCHE P11. N se calcula con MUESTRAS de 10 s en alarma.')
+    print('con una versión antigua. N se calcula con MUESTRAS de 10 s en alarma.')
     print('Una regla de estado como A4 suma 60 por ventana y domina N: estos')
     print('números sirven para mirar, NO para la memoria. Corre el paso 02.')
     print('!' * 72)
@@ -299,11 +299,11 @@ print('=' * 72)
 
 err = pd.read_csv(ARCHIVO_ERROR)
 if AE not in err.columns:
-    raise SystemExit(f'El archivo del paso 05 no trae {AE}.')
+    raise SystemExit(f'El archivo del paso 04 no trae {AE}.')
 d = err[LLAVES + ['conjunto', AE]].merge(ventanas, on=LLAVES, how='inner',
                                          validate='one_to_one')
 d = d.rename(columns={AE: 'error_ae'})
-assert len(d) == len(err), 'El cruce con el paso 05 perdió ventanas.'
+assert len(d) == len(err), 'El cruce con el paso 04 perdió ventanas.'
 
 DATOS_ERR = {'validación': d.conjunto == 'val', 'prueba': d.conjunto == 'test',
              'validación + prueba': d.conjunto.isin(['val', 'test'])}
@@ -358,7 +358,7 @@ d_va, d_te = d[d.conjunto == 'val'], d[d.conjunto == 'test']
 u = float(np.percentile(d_va.loc[d_va.sin_alarma, 'error_ae'], PERCENTIL_UMBRAL))
 d['marcada'] = d.error_ae > u
 print(f'Umbral del autoencoder (P{PERCENTIL_UMBRAL} de las ventanas sin alarma de '
-      f'validación): {u:.5f}   <- debe ser el mismo del paso 05')
+      f'validación): {u:.5f}   <- debe ser el mismo del paso 04')
 
 sin_alarma = d[d.marcada & d.sin_alarma].copy()
 for cj in ['val', 'test']:
@@ -378,7 +378,7 @@ cols_lista = [c for c in LLAVES + ['conjunto', 'timestamp_inicio', 'error_ae',
                                    'sensor_origen', 'w_max', 'banda_w']
               if c in sin_alarma.columns]
 sin_alarma.sort_values('error_ae', ascending=False)[cols_lista].to_csv(
-    salida('10_anomalas_sin_alarma.csv'), index=False)
+    salida('05a_anomalas_sin_alarma.csv'), index=False)
 
 
 # =============================================================================
@@ -559,12 +559,12 @@ cols_out = [c for c in LLAVES + ['timestamp_inicio', 'conjunto_fecha',
                                  'criticidad_min', 'N_lineal', 'N_empinada']
             + [c for c in ventanas.columns if c.startswith('banda_N_')]
             if c in ventanas.columns]
-ventanas[cols_out].to_csv(salida('10_nivel_ventanas.csv'), index=False)
-cortes.to_csv(salida('10_cortes.csv'), index=False)
-bandas_err.to_csv(salida('10_bandas_vs_error.csv'), index=False)
-agrup.to_csv(salida('10_agrupamiento.csv'), index=False)
+ventanas[cols_out].to_csv(salida('05a_nivel_ventanas.csv'), index=False)
+cortes.to_csv(salida('05a_cortes.csv'), index=False)
+bandas_err.to_csv(salida('05a_bandas_vs_error.csv'), index=False)
+agrup.to_csv(salida('05a_agrupamiento.csv'), index=False)
 if filas_xgb:
-    pd.DataFrame(filas_xgb).round(4).to_csv(salida('10_xgb.csv'), index=False)
+    pd.DataFrame(filas_xgb).round(4).to_csv(salida('05a_xgb.csv'), index=False)
 
 print('\n' + '=' * 72)
 print(f'RESUMEN — {EQUIPO} | n_j = {CONTEO} | banda {BANDA}')
@@ -580,8 +580,8 @@ for _datos in ['validación', 'prueba']:
         print(f'¿El error del autoencoder ordena las bandas de N en {_datos}? '
               f'{"sí" if bool(_e.monotona.iloc[0]) else "NO"}  ({_v} veces el normal)')
 print(f'Anómalas para el autoencoder sin ninguna alarma: {len(sin_alarma):,} '
-      f'(lista en 10_anomalas_sin_alarma.csv)')
+      f'(lista en 05a_anomalas_sin_alarma.csv)')
 print(f'Agrupamiento que más coincide con las bandas (elegido en validación): '
       f'{_mejor.metodo} / {_mejor.representacion}, ARI en prueba {_mejor.ARI_test}')
-print('Guardado: 10_nivel_ventanas, 10_cortes, 10_bandas_vs_error, '
-      '10_anomalas_sin_alarma, 10_agrupamiento, 10_xgb')
+print('Guardado: 05a_nivel_ventanas, 05a_cortes, 05a_bandas_vs_error, '
+      '05a_anomalas_sin_alarma, 05a_agrupamiento, 05a_xgb')

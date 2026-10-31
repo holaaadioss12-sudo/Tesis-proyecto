@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-PASO 04g — AUTOENCODER TEMPORAL: LATENTE QUE CONSERVA EL TIEMPO (60 x k)
+PASO 03a — AUTOENCODER TEMPORAL: ELECCIÓN DE latent_dim (k) Y DE LA ARQUITECTURA
 =============================================================================
 """
 import os
@@ -54,7 +54,7 @@ PACIENCIA = 15
 SEMILLAS = [int(s) for s in os.environ.get('SEMILLAS', '42').split(',')]
 LATENTES = [int(k) for k in os.environ.get('LATENTES', '2,4,7,8,12').split(',')]
 REDES = os.environ.get('REDES', 'transformer_t,cnn_t,cnn_lstm').split(',')
-REF = 'transformer'                  # el modelo actual del paso 04
+REF = 'transformer'                  # el modelo anterior: latente de 64 sin tiempo
 K_REF = 64                           # su latente: 64 números, sin eje de tiempo
 TOLERANCIA_CODO = 0.10
 PERCENTIL_UMBRAL = 95
@@ -73,9 +73,9 @@ FAMILIAS = {
 
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
-ARCHIVO_SALIDA = f'{RUTA_EQ}/04g_latente_temporal.csv'
-CARPETA_ERRORES = f'{RUTA_EQ}/04g_errores'
-CARPETA_MODELOS = f'{RUTA_EQ}/04g_modelos'
+ARCHIVO_SALIDA = f'{RUTA_EQ}/03a_latente_temporal.csv'
+CARPETA_ERRORES = f'{RUTA_EQ}/03a_errores'
+CARPETA_MODELOS = f'{RUTA_EQ}/03a_modelos'
 for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE]:
     if not os.path.exists(_f):
         raise SystemExit(f'Falta {_f}. ¿Corriste el paso 01?')
@@ -84,10 +84,10 @@ os.makedirs(CARPETA_MODELOS, exist_ok=True)
 
 
 # =============================================================================
-# 1. DATOS — el mismo pipeline del paso 04 y del 04f
+# 1. DATOS — las mismas ventanas y normalización del paso 03b
 # =============================================================================
 print('\n' + '=' * 72)
-print(f'PASO 04g — AUTOENCODER TEMPORAL, LATENTE (60, k) ({EQUIPO})')
+print(f'PASO 03a — ELECCIÓN DE latent_dim, LATENTE (60, k) ({EQUIPO})')
 print('=' * 72)
 
 
@@ -204,7 +204,7 @@ def capa_transformer(d_model=64, nhead=4, dim_ff=128, dropout=0.1):
 
 
 class AETransformer(nn.Module):
-    """REFERENCIA: idéntico al del paso 04."""
+    """REFERENCIA: el modelo anterior (latente de 64, sin eje de tiempo)."""
     def __init__(self, n_vars, W, k=None, d_model=64, num_layers=2):
         super().__init__()
         self.W = W
@@ -223,7 +223,7 @@ class AETransformer(nn.Module):
 
 
 class AETransformerT(nn.Module):
-    """El Transformer del paso 04 con el cuello de botella POR INSTANTE."""
+    """El Transformer con el cuello de botella POR INSTANTE (el del paso 03b)."""
     def __init__(self, n_vars, W, k, d_model=64, num_layers=2):
         super().__init__()
         self.embed = nn.Linear(n_vars, d_model)
@@ -349,7 +349,7 @@ def fila_metricas(e_va, e_te):
 
 
 # =============================================================================
-# 4. ENTRENAMIENTO — el protocolo del paso 04
+# 4. ENTRENAMIENTO — el mismo protocolo del paso 03b
 # =============================================================================
 def entrenar(red, k, semilla):
     torch.manual_seed(semilla)
@@ -470,8 +470,8 @@ for red in REDES:
     ejes[0].plot(p.latent_dim, p.perdida_val, 'o-', label=red)
     ejes[1].plot(p.latent_dim, p.auc_val, 'o-', label=red)
 if len(ref):
-    ejes[0].axhline(ref.perdida_val.iloc[0], color='k', ls='--', lw=1, label='actual (64, colapsado)')
-    ejes[1].axhline(ref.auc_val.iloc[0], color='k', ls='--', lw=1, label='actual (64, colapsado)')
+    ejes[0].axhline(ref.perdida_val.iloc[0], color='k', ls='--', lw=1, label='anterior (64, sin tiempo)')
+    ejes[1].axhline(ref.auc_val.iloc[0], color='k', ls='--', lw=1, label='anterior (64, sin tiempo)')
 ejes[0].set(xlabel='latent_dim (k)', ylabel='Pérdida en ventanas normales de validación (MSE)',
             title='Curva del codo')
 ejes[1].set(xlabel='latent_dim (k)', ylabel='AUC de detección, validación',
@@ -480,18 +480,18 @@ for a in ejes:
     a.set_xticks(LATENTES)
     a.grid(alpha=0.3)
     a.legend(fontsize=8)
-fig.suptitle(f'{EQUIPO}: latente (60, k) contra el actual (64, colapsado)')
+fig.suptitle(f'{EQUIPO}: latente (60, k) contra el anterior (64, sin tiempo)')
 fig.tight_layout()
-fig.savefig(f'{RUTA_EQ}/04g_codo.png', dpi=150)
+fig.savefig(f'{RUTA_EQ}/03a_codo.png', dpi=150)
 plt.close(fig)
-print(f'Gráfico: {RUTA_EQ}/04g_codo.png')
+print(f'Gráfico: {RUTA_EQ}/03a_codo.png')
 
 
 # =============================================================================
 # 6. MEJOR k DE CADA RED CONTRA EL MODELO ACTUAL (intervalo bootstrap)
 # =============================================================================
 print('\n' + '=' * 72)
-print('6. MEJOR k (por AUC de validación) DE CADA RED CONTRA EL ACTUAL')
+print('6. MEJOR k (por AUC de validación) DE CADA RED CONTRA EL ANTERIOR')
 print('=' * 72)
 
 
@@ -526,17 +526,17 @@ if len(ref) and len(eleccion):
             a = np.mean([auc(e, alarma) for e in errs[c]])
             b = np.mean([auc(e, alarma) for e in errs[(REF, K_REF)]])
             filas_res.append({'red': c[0], 'latent_dim': c[1], 'conjunto': etiqueta,
-                              'auc': round(a, 4), 'auc_actual': round(b, 4), 'dif': round(a - b, 4),
+                              'auc': round(a, 4), 'auc_anterior': round(b, 4), 'dif': round(a - b, 4),
                               'ic95_inf': round(float(ic[c][0]), 4), 'ic95_sup': round(float(ic[c][1]), 4)})
 resumen = pd.DataFrame(filas_res)
 if len(resumen):
-    resumen['lectura'] = np.where(resumen.ic95_inf > 0, 'mejor que el actual',
-                                  np.where(resumen.ic95_sup < 0, 'peor que el actual', 'empate'))
+    resumen['lectura'] = np.where(resumen.ic95_inf > 0, 'mejor que el anterior',
+                                  np.where(resumen.ic95_sup < 0, 'peor que el anterior', 'empate'))
     print(resumen.to_string(index=False))
     resumen = resumen.merge(eleccion, on='red', how='left')
-    resumen.to_csv(f'{RUTA_EQ}/04g_resumen.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
+    resumen.to_csv(f'{RUTA_EQ}/03a_resumen.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
 print('Validación decide; prueba solo se informa. Con una semilla es indicativo: para')
-print('decidir, correr el k elegido con SEMILLAS=42,7,2024 y aplicar la regla del 04f.')
+print('decidir, correr el k elegido con SEMILLAS=42,7,2024 y aplicar la regla: 2 veces la dispersión e IC sin el 0.')
 
 
 # =============================================================================
@@ -597,11 +597,11 @@ for red, k in mejores:
 at = pd.DataFrame(filas_at)
 if len(at):
     print(at.to_string(index=False))
-    at.to_csv(f'{RUTA_EQ}/04g_atribucion.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
-    pd.DataFrame(filas_var).to_csv(f'{RUTA_EQ}/04g_variables_por_ventana.csv', sep=';', decimal=',',
+    at.to_csv(f'{RUTA_EQ}/03a_atribucion.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
+    pd.DataFrame(filas_var).to_csv(f'{RUTA_EQ}/03a_variables_por_ventana.csv', sep=';', decimal=',',
                                    index=False, encoding='utf-8-sig')
 print('\nCómo leerlo: si "acierta" está muy por encima del azar, el error por variable')
 print('señala la variable de la regla que sonó: sirve para decir qué revisar. La prueba')
 print('equivalente con el índice W dio 71 a 76 % en lubricación, contra 4 a 6 % de azar.')
-print(f'\nGuardado: {ARCHIVO_SALIDA}, 04g_resumen.csv, 04g_atribucion.csv,')
-print(f'04g_variables_por_ventana.csv, 04g_codo.png y las carpetas 04g_errores y 04g_modelos.')
+print(f'\nGuardado: {ARCHIVO_SALIDA}, 03a_resumen.csv, 03a_atribucion.csv,')
+print(f'03a_variables_por_ventana.csv, 03a_codo.png y las carpetas 03a_errores y 03a_modelos.')

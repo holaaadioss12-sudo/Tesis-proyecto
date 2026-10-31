@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-PASO 10f — NIVEL DE ANOMALÍA REVISADO: REPETICIÓN Y COMBINACIÓN DE ALARMAS
+PASO 05b — NIVEL DE ANOMALÍA REVISADO: REPETICIÓN Y COMBINACIÓN DE ALARMAS
 =============================================================================
-Entrada:  {EQUIPO}_activos_por_ventana_W60.csv, 10_nivel_ventanas.csv, error del paso 05
-Salida:   10f_nivel_revisado.csv, 10f_comparacion.csv, 10f_cruces.csv
+Entrada:  {EQUIPO}_activos_por_ventana_W60.csv, 05a_nivel_ventanas.csv, error del paso 04
+Salida:   05b_nivel_revisado.csv, 05b_comparacion.csv, 05b_cruces.csv
 """
 import os
 import sys
@@ -49,11 +49,11 @@ MATRIZ = {1: ['2_media', '3_grave', '3_grave'],
           3: ['1_leve', '1_leve', '2_media']}
 
 ARCHIVO_ACTIVOS = f'{RUTA_EQ}/{EQUIPO}_activos_por_ventana_W{W}.csv'
-ARCHIVO_NIVEL = f'{RUTA_EQ}/10_nivel_ventanas.csv'
+ARCHIVO_NIVEL = f'{RUTA_EQ}/05a_nivel_ventanas.csv'
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
 for _f in [ARCHIVO_ACTIVOS, ARCHIVO_NIVEL]:
     if not os.path.exists(_f):
-        raise SystemExit(f'Falta {_f}. ¿Corriste el paso 02 y el 10?')
+        raise SystemExit(f'Falta {_f}. ¿Corriste el paso 02 y el 05a?')
 
 
 def salida(nombre):
@@ -64,7 +64,7 @@ def salida(nombre):
 # 1. DATOS
 # =============================================================================
 print('=' * 72)
-print(f'PASO 10f — NIVEL REVISADO ({EQUIPO})')
+print(f'PASO 05b — NIVEL REVISADO ({EQUIPO})')
 print('=' * 72)
 act = pd.read_csv(ARCHIVO_ACTIVOS)
 nivel = pd.read_csv(ARCHIVO_NIVEL)
@@ -79,7 +79,7 @@ print(f'Ventanas: {len(d):,} | reglas: {len(IDS)}')
 # =============================================================================
 # 2. TRES ESCALAS SOBRE LAS MISMAS VENTANAS
 # =============================================================================
-# a) actual: N = suma de peso x episodios activos (paso 10)
+# a) actual: N = suma de peso x episodios activos (paso 05a)
 d['nivel_actual'] = d['banda_N_empinada_natural']
 
 # b) presencia: cada regla cuenta una vez; una familia anidada, una vez y con su nivel más estricto
@@ -165,7 +165,7 @@ if hay_error:
     d = d.merge(_e, on=LLAVES, how='left')
     print(f'Error del autoencoder: {ARCHIVO_ERROR}')
 else:
-    print('Sin el archivo del paso 05: se omite la coherencia con el error.')
+    print('Sin el archivo del paso 04: se omite la coherencia con el error.')
 
 
 def auc(puntaje, positivo):
@@ -237,7 +237,7 @@ print(pd.DataFrame(ejemplos).to_string(index=False))
 d[LLAVES + ['timestamp_inicio', 'conjunto_fecha', 'alarmas', 'N_empinada', 'nivel_actual',
             'N_presencia', 'nivel_presencia', 'crit_max', 'n_subsistemas', 'subsistemas',
             'compuestas', 'nivel_combinado']].to_csv(
-    salida('10f_nivel_revisado.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
-comp.to_csv(salida('10f_comparacion.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
-cruces.to_csv(salida('10f_cruces.csv'), sep=';', encoding='utf-8-sig')
-print(f'\nGuardado: 10f_nivel_revisado.csv, 10f_comparacion.csv y 10f_cruces.csv en {RUTA_EQ}')
+    salida('05b_nivel_revisado.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
+comp.to_csv(salida('05b_comparacion.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
+cruces.to_csv(salida('05b_cruces.csv'), sep=';', encoding='utf-8-sig')
+print(f'\nGuardado: 05b_nivel_revisado.csv, 05b_comparacion.csv y 05b_cruces.csv en {RUTA_EQ}')

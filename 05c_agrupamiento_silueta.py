@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-PASO 10e — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
+PASO 05c — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
 =============================================================================
-Entrada:  04g_modelos/ (FUENTE=04g) o el modelo del paso 04 (FUENTE=pipeline), 10_nivel_ventanas.csv
-Salida:   10e_agrupamiento.csv, 10e_perfil_grupos.csv, 10e_silueta.png
+Entrada:  el modelo del paso 03b (FUENTE=oficial) o de 03a_modelos/ (FUENTE=03a), 05a_nivel_ventanas.csv
+Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png
 """
 import os
 import sys
@@ -78,15 +78,15 @@ FAMILIAS = {
 
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
-ARCHIVO_04G = f'{RUTA_EQ}/04g_latente_temporal.csv'
-ARCHIVO_NIVEL = f'{RUTA_EQ}/10_nivel_ventanas.csv'
+ARCHIVO_04G = f'{RUTA_EQ}/03a_latente_temporal.csv'
+ARCHIVO_NIVEL = f'{RUTA_EQ}/05a_nivel_ventanas.csv'
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
-# FUENTE = '04g': un modelo del barrido del 04g; 'pipeline': el modelo oficial de los pasos 04 y 05
-FUENTE = os.environ.get('FUENTE', '04g')
+# FUENTE = 'oficial': el modelo del paso 03b; '03a': un modelo del barrido del 03a
+FUENTE = os.environ.get('FUENTE', 'oficial')
 for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE, ARCHIVO_NIVEL] + (
-        [ARCHIVO_04G] if FUENTE == '04g' else [ARCHIVO_ERROR]):
+        [ARCHIVO_04G] if FUENTE == '03a' else [ARCHIVO_ERROR]):
     if not os.path.exists(_f):
-        raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 01, 10 y el 04g (o el 04 y 05)?')
+        raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 03b, 04 y 05a (o el 03a)?')
 
 
 def salida(nombre):
@@ -101,29 +101,29 @@ torch.manual_seed(SEED)
 # 1. MODELO
 # =============================================================================
 print('=' * 72)
-print(f'PASO 10e — AGRUPAMIENTO DEL LATENTE TEMPORAL ({EQUIPO}, fuente {FUENTE})')
+print(f'PASO 05c — AGRUPAMIENTO DEL LATENTE TEMPORAL ({EQUIPO}, fuente {FUENTE})')
 print('=' * 72)
-if FUENTE == '04g':
+if FUENTE == '03a':
     r04 = pd.read_csv(ARCHIVO_04G, sep=';', decimal=',')
     _temp = r04[r04.red != 'transformer'].groupby(['red', 'latent_dim']).auc_val.mean()
     if _temp.empty:
-        raise SystemExit('El 04g no tiene corridas de redes temporales.')
+        raise SystemExit('El 03a no tiene corridas de redes temporales.')
     RED = os.environ.get('MODELO_RED', _temp.idxmax()[0])
     K = int(os.environ.get('MODELO_K', _temp.idxmax()[1]))
     SEMILLA = int(os.environ.get('SEMILLA', r04[(r04.red == RED) & (r04.latent_dim == K)].semilla.min()))
     print(f'Modelo: {RED}, latent_dim = {K}, semilla {SEMILLA} '
-          f'(por defecto, el de mayor AUC de validación en el 04g)')
-    RUTA_MOD = salida(f'04g_modelos/{RED}_k{K}_s{SEMILLA}.pt')
-    RUTA_REF = salida(f'04g_modelos/transformer_k64_s{SEMILLA}.pt')
-    RUTA_ERR = salida(f'04g_errores/{RED}_k{K}_s{SEMILLA}.npz')
+          f'(por defecto, el de mayor AUC de validación en el 03a)')
+    RUTA_MOD = salida(f'03a_modelos/{RED}_k{K}_s{SEMILLA}.pt')
+    RUTA_REF = salida(f'03a_modelos/transformer_k64_s{SEMILLA}.pt')
+    RUTA_ERR = salida(f'03a_errores/{RED}_k{K}_s{SEMILLA}.npz')
     for _f in [RUTA_MOD, RUTA_ERR]:
         if not os.path.exists(_f):
-            raise SystemExit(f'Falta {_f}: corre el 04g con esa red, k y semilla.')
-elif FUENTE == 'pipeline':
+            raise SystemExit(f'Falta {_f}: corre el 03a con esa red, k y semilla.')
+elif FUENTE == 'oficial':
     _cands = [salida(f'autoencoder_W{W}_normales.pt'), salida(f'CAMBIOS/autoencoder_W{W}_normales.pt')]
     RUTA_MOD = next((r for r in _cands if os.path.exists(r)), None)
     if RUTA_MOD is None:
-        raise SystemExit(f'No encontré el modelo del paso 04 en: {_cands}')
+        raise SystemExit(f'No encontré el modelo del paso 03b en: {_cands}')
     _cfg_ruta = os.path.join(os.path.dirname(RUTA_MOD), f'autoencoder_W{W}_config.json')
     CONFIG_AE = (json.load(open(_cfg_ruta)) if os.path.exists(_cfg_ruta)
                  else {'tipo': 'colapsado', 'latent_dim': 64})
@@ -132,11 +132,11 @@ elif FUENTE == 'pipeline':
     RUTA_REF = os.environ.get('MODELO_REFERENCIA', '')     # opcional: el modelo anterior (.pt)
     print(f"Modelo oficial: {CONFIG_AE['tipo']}, latent_dim = {K} ({RUTA_MOD})")
 else:
-    raise SystemExit(f"FUENTE tiene que ser '04g' o 'pipeline', no {FUENTE!r}.")
+    raise SystemExit(f"FUENTE tiene que ser 'oficial' o '03a', no {FUENTE!r}.")
 
 
 # =============================================================================
-# 2. LAS MISMAS VENTANAS DEL 04g
+# 2. LAS MISMAS VENTANAS DEL 03a Y DEL 03b
 # =============================================================================
 def cargar_limpio(ruta):
     cabecera = pd.read_csv(ruta, nrows=0)
@@ -167,7 +167,7 @@ _ini = np.array([t.index[0] for t in tramos])
 conjunto_tramo = np.where(_ini <= T_TRAIN, 'train', np.where(_ini <= T_VAL, 'val', 'test'))
 concat = pd.concat([t for t, c in zip(tramos, conjunto_tramo) if c == 'train'])[VARIABLES]
 media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
-if FUENTE == 'pipeline':                       # el normalizador que guardó el paso 04
+if FUENTE == 'oficial':                        # el normalizador que guardó el paso 03b
     _nz = np.load(os.path.join(os.path.dirname(RUTA_MOD), f'normalizador_W{W}.npz'), allow_pickle=True)
     media_n = pd.Series(_nz['media'], index=list(_nz['variables']))[VARIABLES]
     std_n = pd.Series(_nz['std'], index=list(_nz['variables']))[VARIABLES]
@@ -203,7 +203,7 @@ tipo_va, tipo_te = familia_dominante(cu_va), familia_dominante(cu_te)
 
 
 # =============================================================================
-# 3. MODELOS (mismas clases del 04g) Y LATENTE
+# 3. MODELOS (mismas clases del 03a) Y LATENTE
 # =============================================================================
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=1000):
@@ -324,21 +324,21 @@ Z_va, ev_va = latente_y_error(modelo, X_va)
 Z_te, ev_te = latente_y_error(modelo, X_te)
 print(f'Latente temporal: {Z_va.shape[1:]} por ventana')
 
-# verificación: mismas ventanas y mismo modelo que el 04g (o que el paso 05)
-if FUENTE == '04g':
+# verificación: mismas ventanas y mismo modelo que el paso 04 (o que el 03a)
+if FUENTE == '03a':
     _g = np.load(RUTA_ERR)
     _ref_va, _ref_te, _yo_va, _yo_te = _g['ev_va'], _g['ev_te'], ev_va, ev_te
-else:                     # el paso 05 numera distinto: se comparan los errores ordenados
+else:                     # el paso 04 numera distinto: se comparan los errores ordenados
     _e5 = pd.read_csv(ARCHIVO_ERROR, usecols=['conjunto', 'err_AE_normales'])
     _ref_va = np.sort(_e5[_e5.conjunto == 'val'].err_AE_normales.to_numpy())
     _ref_te = np.sort(_e5[_e5.conjunto == 'test'].err_AE_normales.to_numpy())
     _yo_va, _yo_te = np.sort(ev_va.mean(axis=1)), np.sort(ev_te.mean(axis=1))
     if len(_ref_va) != len(_yo_va) or len(_ref_te) != len(_yo_te):
-        raise SystemExit(f'Distinto número de ventanas que el paso 05: val {len(_yo_va)} contra '
+        raise SystemExit(f'Distinto número de ventanas que el paso 04: val {len(_yo_va)} contra '
                          f'{len(_ref_va)}, prueba {len(_yo_te)} contra {len(_ref_te)}.')
 _dif = max(np.max(np.abs(_yo_va - _ref_va) / np.clip(_ref_va, 1e-9, None)),
            np.max(np.abs(_yo_te - _ref_te) / np.clip(_ref_te, 1e-9, None)))
-print(f'Error recalculado contra el del {FUENTE if FUENTE == "04g" else "paso 05"}: '
+print(f'Error recalculado contra el del {FUENTE if FUENTE == "03a" else "paso 04"}: '
       f'diferencia relativa máxima {_dif:.2e}')
 if _dif > TOL_ERROR:
     raise SystemExit('No coincide: no son las mismas ventanas o el mismo modelo.')
@@ -358,7 +358,7 @@ else:
 
 
 # =============================================================================
-# 4. NIVEL DE CADA VENTANA (paso 10)
+# 4. NIVEL DE CADA VENTANA (paso 05a)
 # =============================================================================
 _nv = pd.read_csv(ARCHIVO_NIVEL, usecols=['timestamp_inicio', 'N_empinada', BANDA],
                   parse_dates=['timestamp_inicio']).drop_duplicates('timestamp_inicio')
@@ -367,9 +367,9 @@ _mapa_n = _nv.set_index('timestamp_inicio')['N_empinada']
 b_va, b_te = ts_va.map(_mapa_b).to_numpy(dtype=object), ts_te.map(_mapa_b).to_numpy(dtype=object)
 n_va, n_te = ts_va.map(_mapa_n).to_numpy(dtype=float), ts_te.map(_mapa_n).to_numpy(dtype=float)
 _cob = np.mean(pd.notna(np.concatenate([b_va, b_te])))
-print(f'Ventanas con nivel del paso 10: {_cob:.1%}')
+print(f'Ventanas con nivel del paso 05a: {_cob:.1%}')
 if _cob < 0.9:
-    print('OJO: menos del 90 % cruzó con 10_nivel_ventanas.csv. Revisa que sea del mismo limpio.')
+    print('OJO: menos del 90 % cruzó con 05a_nivel_ventanas.csv. Revisa que sea del mismo limpio.')
 
 
 # =============================================================================
@@ -482,7 +482,7 @@ for rep, (A_va, A_te) in REPRES.items():
         anota(rep, f'GMM k={kb} (BIC)', kb, gm.predict(Xv), gm.predict(Xt), Xv, Xt)
 
 agrup = pd.DataFrame(filas)
-agrup.to_csv(salida('10e_agrupamiento.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
+agrup.to_csv(salida('05c_agrupamiento.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
 pd.set_option('display.width', 240)
 pd.set_option('display.max_colwidth', 40)
 
@@ -517,7 +517,7 @@ for a in ejes:
     a.legend(fontsize=8)
 fig.suptitle(f'{EQUIPO}: latente de {RED} (60 x {K}) y latente actual (64)')
 fig.tight_layout()
-fig.savefig(salida('10e_silueta.png'), dpi=150)
+fig.savefig(salida('05c_silueta.png'), dpi=150)
 plt.close(fig)
 
 
@@ -556,8 +556,8 @@ else:
             'error_mediano': round(float(np.median(e_va[mv][s])), 5)})
     perfil = pd.DataFrame(perfil)
     print(perfil.to_string(index=False))
-    perfil.to_csv(salida('10e_perfil_grupos.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
+    perfil.to_csv(salida('05c_perfil_grupos.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
     print('\nSi un grupo concentra un tipo de alarma y unas variables, describe un modo de')
     print('comportamiento aunque no coincida con leve / media / grave.')
 
-print(f'\nGuardado: 10e_agrupamiento.csv, 10e_perfil_grupos.csv y 10e_silueta.png en {RUTA_EQ}')
+print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv y 05c_silueta.png en {RUTA_EQ}')
