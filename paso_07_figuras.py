@@ -22,6 +22,8 @@ if RUTA_BASE not in sys.path:
 
 EQUIPO = os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 RUTA_FIG = f'{RUTA_EQ}/figuras'
 os.makedirs(RUTA_FIG, exist_ok=True)
 print(f'Equipo: {EQUIPO} | figuras en: {RUTA_FIG}')

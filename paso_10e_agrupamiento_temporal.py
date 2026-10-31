@@ -3,7 +3,7 @@
 =============================================================================
 PASO 10e — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
 =============================================================================
-Entrada:  04g_latente_temporal.csv, 04g_modelos/, 10_nivel_ventanas.csv
+Entrada:  04g_modelos/ (FUENTE=04g) o el modelo del paso 04 (FUENTE=pipeline), 10_nivel_ventanas.csv
 Salida:   10e_agrupamiento.csv, 10e_perfil_grupos.csv, 10e_silueta.png
 """
 import os
@@ -80,9 +80,13 @@ ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'
 ARCHIVO_04G = f'{RUTA_EQ}/04g_latente_temporal.csv'
 ARCHIVO_NIVEL = f'{RUTA_EQ}/10_nivel_ventanas.csv'
-for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE, ARCHIVO_04G, ARCHIVO_NIVEL]:
+ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
+# FUENTE = '04g': un modelo del barrido del 04g; 'pipeline': el modelo oficial de los pasos 04 y 05
+FUENTE = os.environ.get('FUENTE', '04g')
+for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE, ARCHIVO_NIVEL] + (
+        [ARCHIVO_04G] if FUENTE == '04g' else [ARCHIVO_ERROR]):
     if not os.path.exists(_f):
-        raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 01, 04g y 10?')
+        raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 01, 10 y el 04g (o el 04 y 05)?')
 
 
 def salida(nombre):
@@ -94,26 +98,41 @@ torch.manual_seed(SEED)
 
 
 # =============================================================================
-# 1. MODELO ELEGIDO EN EL 04g
+# 1. MODELO
 # =============================================================================
 print('=' * 72)
-print(f'PASO 10e — AGRUPAMIENTO DEL LATENTE TEMPORAL ({EQUIPO})')
+print(f'PASO 10e — AGRUPAMIENTO DEL LATENTE TEMPORAL ({EQUIPO}, fuente {FUENTE})')
 print('=' * 72)
-r04 = pd.read_csv(ARCHIVO_04G, sep=';', decimal=',')
-_temp = r04[r04.red != 'transformer'].groupby(['red', 'latent_dim']).auc_val.mean()
-if _temp.empty:
-    raise SystemExit('El 04g no tiene corridas de redes temporales.')
-RED = os.environ.get('MODELO_RED', _temp.idxmax()[0])
-K = int(os.environ.get('MODELO_K', _temp.idxmax()[1]))
-SEMILLA = int(os.environ.get('SEMILLA', r04[(r04.red == RED) & (r04.latent_dim == K)].semilla.min()))
-print(f'Modelo temporal: {RED}, latent_dim = {K}, semilla {SEMILLA} '
-      f'(por defecto, el de mayor AUC de validación en el 04g)')
-RUTA_MOD = salida(f'04g_modelos/{RED}_k{K}_s{SEMILLA}.pt')
-RUTA_REF = salida(f'04g_modelos/transformer_k64_s{SEMILLA}.pt')
-RUTA_ERR = salida(f'04g_errores/{RED}_k{K}_s{SEMILLA}.npz')
-for _f in [RUTA_MOD, RUTA_ERR]:
-    if not os.path.exists(_f):
-        raise SystemExit(f'Falta {_f}: corre el 04g con esa red, k y semilla.')
+if FUENTE == '04g':
+    r04 = pd.read_csv(ARCHIVO_04G, sep=';', decimal=',')
+    _temp = r04[r04.red != 'transformer'].groupby(['red', 'latent_dim']).auc_val.mean()
+    if _temp.empty:
+        raise SystemExit('El 04g no tiene corridas de redes temporales.')
+    RED = os.environ.get('MODELO_RED', _temp.idxmax()[0])
+    K = int(os.environ.get('MODELO_K', _temp.idxmax()[1]))
+    SEMILLA = int(os.environ.get('SEMILLA', r04[(r04.red == RED) & (r04.latent_dim == K)].semilla.min()))
+    print(f'Modelo: {RED}, latent_dim = {K}, semilla {SEMILLA} '
+          f'(por defecto, el de mayor AUC de validación en el 04g)')
+    RUTA_MOD = salida(f'04g_modelos/{RED}_k{K}_s{SEMILLA}.pt')
+    RUTA_REF = salida(f'04g_modelos/transformer_k64_s{SEMILLA}.pt')
+    RUTA_ERR = salida(f'04g_errores/{RED}_k{K}_s{SEMILLA}.npz')
+    for _f in [RUTA_MOD, RUTA_ERR]:
+        if not os.path.exists(_f):
+            raise SystemExit(f'Falta {_f}: corre el 04g con esa red, k y semilla.')
+elif FUENTE == 'pipeline':
+    _cands = [salida(f'autoencoder_W{W}_normales.pt'), salida(f'CAMBIOS/autoencoder_W{W}_normales.pt')]
+    RUTA_MOD = next((r for r in _cands if os.path.exists(r)), None)
+    if RUTA_MOD is None:
+        raise SystemExit(f'No encontré el modelo del paso 04 en: {_cands}')
+    _cfg_ruta = os.path.join(os.path.dirname(RUTA_MOD), f'autoencoder_W{W}_config.json')
+    CONFIG_AE = (json.load(open(_cfg_ruta)) if os.path.exists(_cfg_ruta)
+                 else {'tipo': 'colapsado', 'latent_dim': 64})
+    RED = 'transformer_t' if CONFIG_AE['tipo'] == 'temporal' else 'transformer'
+    K = int(CONFIG_AE['latent_dim'])
+    RUTA_REF = os.environ.get('MODELO_REFERENCIA', '')     # opcional: el modelo anterior (.pt)
+    print(f"Modelo oficial: {CONFIG_AE['tipo']}, latent_dim = {K} ({RUTA_MOD})")
+else:
+    raise SystemExit(f"FUENTE tiene que ser '04g' o 'pipeline', no {FUENTE!r}.")
 
 
 # =============================================================================
@@ -148,6 +167,10 @@ _ini = np.array([t.index[0] for t in tramos])
 conjunto_tramo = np.where(_ini <= T_TRAIN, 'train', np.where(_ini <= T_VAL, 'val', 'test'))
 concat = pd.concat([t for t, c in zip(tramos, conjunto_tramo) if c == 'train'])[VARIABLES]
 media_n, std_n = concat.mean(), concat.std().replace(0, 1.0)
+if FUENTE == 'pipeline':                       # el normalizador que guardó el paso 04
+    _nz = np.load(os.path.join(os.path.dirname(RUTA_MOD), f'normalizador_W{W}.npz'), allow_pickle=True)
+    media_n = pd.Series(_nz['media'], index=list(_nz['variables']))[VARIABLES]
+    std_n = pd.Series(_nz['std'], index=list(_nz['variables']))[VARIABLES]
 
 
 def construir(conjunto):
@@ -301,13 +324,24 @@ Z_va, ev_va = latente_y_error(modelo, X_va)
 Z_te, ev_te = latente_y_error(modelo, X_te)
 print(f'Latente temporal: {Z_va.shape[1:]} por ventana')
 
-# verificación: mismas ventanas y mismo modelo que el 04g
-_g = np.load(RUTA_ERR)
-_dif = max(np.max(np.abs(ev_va - _g['ev_va']) / np.clip(_g['ev_va'], 1e-9, None)),
-           np.max(np.abs(ev_te - _g['ev_te']) / np.clip(_g['ev_te'], 1e-9, None)))
-print(f'Error recalculado contra el del 04g: diferencia relativa máxima {_dif:.2e}')
+# verificación: mismas ventanas y mismo modelo que el 04g (o que el paso 05)
+if FUENTE == '04g':
+    _g = np.load(RUTA_ERR)
+    _ref_va, _ref_te, _yo_va, _yo_te = _g['ev_va'], _g['ev_te'], ev_va, ev_te
+else:                     # el paso 05 numera distinto: se comparan los errores ordenados
+    _e5 = pd.read_csv(ARCHIVO_ERROR, usecols=['conjunto', 'err_AE_normales'])
+    _ref_va = np.sort(_e5[_e5.conjunto == 'val'].err_AE_normales.to_numpy())
+    _ref_te = np.sort(_e5[_e5.conjunto == 'test'].err_AE_normales.to_numpy())
+    _yo_va, _yo_te = np.sort(ev_va.mean(axis=1)), np.sort(ev_te.mean(axis=1))
+    if len(_ref_va) != len(_yo_va) or len(_ref_te) != len(_yo_te):
+        raise SystemExit(f'Distinto número de ventanas que el paso 05: val {len(_yo_va)} contra '
+                         f'{len(_ref_va)}, prueba {len(_yo_te)} contra {len(_ref_te)}.')
+_dif = max(np.max(np.abs(_yo_va - _ref_va) / np.clip(_ref_va, 1e-9, None)),
+           np.max(np.abs(_yo_te - _ref_te) / np.clip(_ref_te, 1e-9, None)))
+print(f'Error recalculado contra el del {FUENTE if FUENTE == "04g" else "paso 05"}: '
+      f'diferencia relativa máxima {_dif:.2e}')
 if _dif > TOL_ERROR:
-    raise SystemExit('No coincide con el 04g: no son las mismas ventanas o el mismo modelo.')
+    raise SystemExit('No coincide: no son las mismas ventanas o el mismo modelo.')
 
 e_va, e_te = ev_va.mean(axis=1), ev_te.mean(axis=1)
 umbral = float(np.percentile(e_va[~al_va], PERCENTIL_UMBRAL))
@@ -315,12 +349,12 @@ mv, mt = e_va > umbral, e_te > umbral
 print(f'Umbral P{PERCENTIL_UMBRAL} (ventanas sin alarma de validación): {umbral:.5f}')
 print(f'Ventanas marcadas: validación {mv.sum():,} | prueba {mt.sum():,}')
 
-if os.path.exists(RUTA_REF):
+if RUTA_REF and os.path.exists(RUTA_REF) and RED != 'transformer':
     Zr_va, _ = latente_y_error(cargar('transformer', 64, RUTA_REF), X_va)
     Zr_te, _ = latente_y_error(cargar('transformer', 64, RUTA_REF), X_te)
 else:
     Zr_va = Zr_te = None
-    print('No está el modelo actual del 04g: se omite la comparación con el latente de 64.')
+    print('Sin modelo de referencia (latente de 64): se omite esa comparación.')
 
 
 # =============================================================================
@@ -357,12 +391,15 @@ def preparar(A_va, A_te):
     return p.transform(a_va), p.transform(a_te), n
 
 
-REPRES = {
-    f'temporal_resumen (media, desv, mín, máx y pendiente de las {K} dimensiones)':
-        (resumen_temporal(Z_va[mv]), resumen_temporal(Z_te[mt])),
-    f'temporal_aplanado (60 x {K} valores)':
-        (Z_va[mv].reshape(mv.sum(), -1), Z_te[mt].reshape(mt.sum(), -1)),
-}
+if Z_va.ndim == 3:
+    REPRES = {
+        f'temporal_resumen (media, desv, mín, máx y pendiente de las {K} dimensiones)':
+            (resumen_temporal(Z_va[mv]), resumen_temporal(Z_te[mt])),
+        f'temporal_aplanado (60 x {K} valores)':
+            (Z_va[mv].reshape(mv.sum(), -1), Z_te[mt].reshape(mt.sum(), -1)),
+    }
+else:                                          # modelo sin eje de tiempo (latente de 64)
+    REPRES = {'actual_64 (latente sin tiempo)': (Z_va[mv], Z_te[mt])}
 if Zr_va is not None:
     REPRES['actual_64 (latente sin tiempo, referencia)'] = (Zr_va[mv], Zr_te[mt])
 

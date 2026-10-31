@@ -20,6 +20,8 @@ RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 
@@ -1374,6 +1376,8 @@ RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 
@@ -1576,6 +1580,8 @@ RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 
@@ -1607,9 +1613,15 @@ STRIDE_EVAL = W      # sin traslape en val/test
 EPOCHS_MAX = 100
 PACIENCIA = 15       # épocas sin mejorar la pérdida de validación
 
+# Autoencoder temporal: latente de 60 x LATENT_DIM (reduce variables, conserva el tiempo).
+# TIPO_AE = 'colapsado' vuelve al modelo anterior (latente de 64 sin eje de tiempo).
+TIPO_AE = _os.environ.get('TIPO_AE', 'temporal')
+LATENT_DIM = int(_os.environ.get('LATENT_DIM', 4))
+
 ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 RUTA_MODELO = f'{RUTA_EQ}/autoencoder_W{W}_normales.pt'          # menor pérdida
 RUTA_MODELO_SEP = f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt'  # mayor separación
+RUTA_CONFIG = f'{RUTA_EQ}/autoencoder_W{W}_config.json'
 RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'
 RUTA_CURVA = f'{RUTA_EQ}/04b_curva_entrenamiento.png'
 RUTA_EPOCAS = f'{RUTA_EQ}/04b_comparacion_epocas.csv'
@@ -1844,11 +1856,57 @@ class AutoencoderTransformer(nn.Module):
         return self.decode(self.encode(x))
 
 
+class AutoencoderTransformerTemporal(nn.Module):
+    """Latente (60, latent_dim): el cuello de botella reduce las variables en cada instante."""
+    def __init__(self, n_vars, W, latent_dim=4, d_model=64, nhead=4, num_layers=2,
+                 dim_ff=128, dropout=0.1):
+        super().__init__()
+        self.W = W
+        self.embed = nn.Linear(n_vars, d_model)
+        self.pos_enc = PositionalEncoding(d_model, max_len=W)
+        capa_encoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.encoder = nn.TransformerEncoder(capa_encoder, num_layers=num_layers)
+        self.a_latente = nn.Linear(d_model, latent_dim)       # cuello de botella: 64 -> k
+        self.desde_latente = nn.Linear(latent_dim, d_model)   # vuelta: k -> 64
+        capa_decoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.decoder = nn.TransformerEncoder(capa_decoder, num_layers=num_layers)
+        self.salida = nn.Linear(d_model, n_vars)
+
+    def encode(self, x):                                       # (B, 60, 14)
+        h = self.encoder(self.pos_enc(self.embed(x)))          # (B, 60, 64)
+        return self.a_latente(h)                               # (B, 60, k)
+
+    def decode(self, latente):
+        h = self.pos_enc(self.desde_latente(latente))          # (B, 60, 64)
+        return self.salida(self.decoder(h))                    # (B, 60, 14)
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
+
+
 n_vars = len(VARIABLES)
-modelo = AutoencoderTransformer(n_vars=n_vars, W=W).to(device)
+if TIPO_AE == 'temporal':
+    modelo = AutoencoderTransformerTemporal(n_vars=n_vars, W=W, latent_dim=LATENT_DIM).to(device)
+elif TIPO_AE == 'colapsado':
+    modelo = AutoencoderTransformer(n_vars=n_vars, W=W).to(device)
+else:
+    raise SystemExit(f"TIPO_AE tiene que ser 'temporal' o 'colapsado', no {TIPO_AE!r}.")
 n_params = sum(p.numel() for p in modelo.parameters() if p.requires_grad)
-print(f'\nModelo: {n_params:,} parámetros entrenables')
-print(f'Compresión: {W * n_vars} números -> 64 ({W * n_vars / 64:.1f}x)')
+with torch.no_grad():
+    _forma_latente = tuple(modelo.encode(torch.zeros(1, W, n_vars, device=device)).shape[1:])
+_n_latente = int(np.prod(_forma_latente))
+print(f'\nModelo: {TIPO_AE} | {n_params:,} parámetros entrenables')
+print(f'Formas: entrada ({W}, {n_vars}) -> latente {_forma_latente} -> salida ({W}, {n_vars})')
+print(f'Compresión: {W * n_vars} números -> {_n_latente} ({W * n_vars / _n_latente:.1f}x)')
+_json.dump({'tipo': TIPO_AE, 'latent_dim': LATENT_DIM if TIPO_AE == 'temporal' else 64,
+            'forma_latente': list(_forma_latente), 'd_model': 64, 'nhead': 4, 'num_layers': 2,
+            'dim_ff': 128, 'dropout': 0.1, 'W': W, 'variables': VARIABLES},
+           open(RUTA_CONFIG, 'w'), indent=1)
+print(f'Configuración guardada: {RUTA_CONFIG}')
 
 
 # =============================================================================
@@ -2080,6 +2138,8 @@ RUTA_BASE = '/content/drive/MyDrive/tesis_chancadores'
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 
@@ -2125,6 +2185,13 @@ for _n, _r in MODELOS.items():
     print(f'  {_n:<18} {_r}')
 RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'
 ARCHIVO_SALIDA = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
+RUTA_CONFIG = _os.path.join(_os.path.dirname(RUTA_MODELO), f'autoencoder_W{W}_config.json')
+
+import sys as _sys
+import json as _json
+if RUTA_BASE not in _sys.path:
+    _sys.path.append(RUTA_BASE)
+from reglas_engine import POR_ID, IDS as IDS_REGLAS
 
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -2270,22 +2337,65 @@ class AutoencoderTransformer(nn.Module):
         return self.decode(self.encode(x))
 
 
-modelo = AutoencoderTransformer(n_vars=len(VARIABLES), W=W).to(device)
+class AutoencoderTransformerTemporal(nn.Module):
+    """Latente (60, latent_dim): el cuello de botella reduce las variables en cada instante."""
+    def __init__(self, n_vars, W, latent_dim=4, d_model=64, nhead=4, num_layers=2,
+                 dim_ff=128, dropout=0.1):
+        super().__init__()
+        self.W = W
+        self.embed = nn.Linear(n_vars, d_model)
+        self.pos_enc = PositionalEncoding(d_model, max_len=W)
+        capa_encoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.encoder = nn.TransformerEncoder(capa_encoder, num_layers=num_layers)
+        self.a_latente = nn.Linear(d_model, latent_dim)
+        self.desde_latente = nn.Linear(latent_dim, d_model)
+        capa_decoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.decoder = nn.TransformerEncoder(capa_decoder, num_layers=num_layers)
+        self.salida = nn.Linear(d_model, n_vars)
+
+    def encode(self, x):
+        return self.a_latente(self.encoder(self.pos_enc(self.embed(x))))
+
+    def decode(self, latente):
+        return self.salida(self.decoder(self.pos_enc(self.desde_latente(latente))))
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
+
+
+# el tipo de modelo lo dice la configuración que guardó el paso 04
+CONFIG_AE = (_json.load(open(RUTA_CONFIG)) if _os.path.exists(RUTA_CONFIG)
+             else {'tipo': 'colapsado', 'latent_dim': 64})
+if CONFIG_AE['tipo'] == 'temporal':
+    modelo = AutoencoderTransformerTemporal(n_vars=len(VARIABLES), W=W,
+                                            latent_dim=CONFIG_AE['latent_dim']).to(device)
+else:
+    modelo = AutoencoderTransformer(n_vars=len(VARIABLES), W=W).to(device)
+print(f"Autoencoder: {CONFIG_AE['tipo']}, latent_dim = {CONFIG_AE['latent_dim']}"
+      + ('' if _os.path.exists(RUTA_CONFIG) else '  (sin config del paso 04: modelo anterior)'))
 X_eval_t = torch.from_numpy(X_eval)
 df_err = pd.DataFrame(ids_eval, columns=['tramo_id', 'ventana_id'])
 df_err['conjunto'] = conjunto_eval
+EVAR = [f'evar_{v}' for v in VARIABLES]
 
 for nombre, ruta in MODELOS.items():
     modelo.load_state_dict(torch.load(ruta, map_location=device))
     modelo.eval()
-    errores = []
+    ev = []
     with torch.no_grad():
         for i in range(0, len(X_eval_t), 256):
             batch = X_eval_t[i:i + 256].to(device)
-            recon = modelo(batch)
-            errores.extend(((recon - batch) ** 2).mean(dim=(1, 2)).cpu().tolist())
-    df_err[f'err_{nombre}'] = errores
-    print(f'  {nombre:<18} evaluado | error medio {np.mean(errores):.5f}')
+            ev.append(((modelo(batch) - batch) ** 2).mean(dim=1).cpu().numpy())
+    ev = np.concatenate(ev)                     # (ventanas, 14): error de cada variable
+    df_err[f'err_{nombre}'] = ev.mean(axis=1)   # error de la ventana: promedio de los 14
+    if nombre == MODELO_PRINCIPAL:
+        for _j, _c in enumerate(EVAR):
+            df_err[_c] = ev[:, _j]
+    print(f'  {nombre:<18} evaluado | error medio {ev.mean():.5f}')
 
 if f'err_{MODELO_PRINCIPAL}' not in df_err.columns:
     raise SystemExit(f'Falta el modelo principal ({MODELO_PRINCIPAL}). '
@@ -2345,6 +2455,74 @@ if len(m) < len(df_err) * 0.99:
     print('⚠ Se perdieron filas en el merge. Revisa los tramo_id / ventana_id.')
 
 m['es_normal'] = m['etiqueta_ventana'] == 'normal'
+
+
+# =============================================================================
+# 4b. ERROR POR VARIABLE: QUÉ VARIABLES EXPLICAN QUE LA VENTANA SEA ANÓMALA
+# =============================================================================
+print('\n' + '=' * 70)
+print('4b. ERROR POR VARIABLE')
+print('=' * 70)
+_sin_alarma = (m.n_reglas_activas == 0) if 'n_reglas_activas' in m.columns else m.es_normal
+_quietas_val = ((m.conjunto == 'val') & _sin_alarma).to_numpy()
+U_VAR = m.loc[_quietas_val, EVAR].quantile(0.95).to_numpy()      # umbral P95 por variable
+_ev = m[EVAR].to_numpy()
+_orden = np.argsort(-_ev, axis=1)
+for _i in range(3):
+    m[f'var_{_i + 1}'] = np.array(VARIABLES)[_orden[:, _i]]
+m['aporte_var_1_pct'] = (100 * _ev[np.arange(len(m)), _orden[:, 0]] / _ev.sum(axis=1)).round(1)
+m['variables_sobre_umbral'] = [', '.join(np.array(VARIABLES)[s]) for s in (_ev > U_VAR)]
+pd.DataFrame({'variable': VARIABLES, 'umbral_P95': U_VAR}).to_csv(
+    f'{RUTA_EQ}/05_umbral_por_variable.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
+print('Umbral por variable (P95 de las ventanas sin alarma de validación): 05_umbral_por_variable.csv')
+
+# ¿la variable con más error es la de la regla que sonó? (contra el azar)
+FAMILIAS = {
+    'lubricacion': ['D', 'A5', 'E'],
+    'corriente':   ['A', 'A1', 'A4'],
+    'atollo':      ['B', 'A3'],
+    'filtro':      ['C'],
+    'temperatura': ['F', 'A7', 'A6', 'A10', 'A9', 'A8', 'I', 'A11', 'A13', 'A12',
+                    'K', 'A15', 'A14', 'A16', 'L', 'A21', 'A22'],
+    'vibracion':   ['O', 'A20', 'A19', 'A18', 'A17'],
+}
+
+
+def _variables_de(regla):
+    r = POR_ID[regla]
+    return [r[c] for c in ('var', 'var2', 'a', 'b') if c in r] + list(r.get('vars', []))
+
+
+_rc = [r for r in IDS_REGLAS if r in ventanas.columns]
+_act = (m[['tramo_id', 'ventana_id']]
+        .merge(ventanas[['tramo_id', 'ventana_id'] + _rc], on=['tramo_id', 'ventana_id'], how='left')
+        [_rc].fillna(0).to_numpy() > 0)
+_r2v = np.array([[v in _variables_de(r) for v in VARIABLES] for r in _rc], dtype=int)
+_vars_ok = (_act.astype(int) @ _r2v) > 0          # variables que miran las reglas que sonaron
+_top = _orden[:, 0]
+_dist0 = np.bincount(_top[_quietas_val], minlength=len(VARIABLES)) / max(int(_quietas_val.sum()), 1)
+_fam = {f: (_act[:, [_rc.index(r) for r in rs if r in _rc]].any(axis=1)
+            if any(r in _rc for r in rs) else np.zeros(len(m), bool)) for f, rs in FAMILIAS.items()}
+_filas_at = []
+for _cj in ('val', 'test'):
+    _base = (m.conjunto == _cj).to_numpy() & _act.any(axis=1)
+    _grupos = {'todas las anomalas': _base}
+    for _f in FAMILIAS:
+        _otras = np.column_stack([_fam[g] for g in FAMILIAS if g != _f]).any(axis=1)
+        _grupos[f'solo {_f}'] = _base & _fam[_f] & ~_otras
+    for _g, _s in _grupos.items():
+        if _s.sum() == 0:
+            continue
+        _ok = _vars_ok[_s]
+        _filas_at.append({'conjunto': _cj, 'grupo': _g, 'ventanas': int(_s.sum()),
+                          'acierta_pct': round(100 * _ok[np.arange(_s.sum()), _top[_s]].mean(), 1),
+                          'azar_pct': round(100 * (_ok * _dist0).sum(axis=1).mean(), 1)})
+atribucion = pd.DataFrame(_filas_at)
+print(atribucion.to_string(index=False))
+atribucion.to_csv(f'{RUTA_EQ}/05_atribucion_variables.csv', sep=';', decimal=',', index=False,
+                  encoding='utf-8-sig')
+print('acierta_pct: la variable con más error es una de las que mira la regla que sonó.')
+print('azar_pct: lo que acertaría si esa variable se repartiera como en las ventanas sin alarma.')
 
 
 # =============================================================================

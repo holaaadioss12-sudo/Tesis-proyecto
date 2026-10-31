@@ -22,6 +22,8 @@ if RUTA_BASE not in sys.path:
 import os as _os
 EQUIPO = _os.environ.get('EQUIPO', 'CR010')
 RUTA_EQ = RUTA_BASE if EQUIPO == 'CR010' else f'{RUTA_BASE}/{EQUIPO}'
+if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
+    RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 

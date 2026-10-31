@@ -206,7 +206,46 @@ class AutoencoderTransformer(nn.Module):
         return self.decode(self.encode(x))
 
 
-modelo = AutoencoderTransformer(n_vars=len(VARIABLES), W=W).to(device)
+class AutoencoderTransformerTemporal(nn.Module):
+    """Latente (60, latent_dim): el cuello de botella reduce las variables en cada instante."""
+    def __init__(self, n_vars, W, latent_dim=4, d_model=64, nhead=4, num_layers=2,
+                 dim_ff=128, dropout=0.1):
+        super().__init__()
+        self.W = W
+        self.embed = nn.Linear(n_vars, d_model)
+        self.pos_enc = PositionalEncoding(d_model, max_len=W)
+        capa_encoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.encoder = nn.TransformerEncoder(capa_encoder, num_layers=num_layers)
+        self.a_latente = nn.Linear(d_model, latent_dim)
+        self.desde_latente = nn.Linear(latent_dim, d_model)
+        capa_decoder = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_ff,
+            dropout=dropout, batch_first=True)
+        self.decoder = nn.TransformerEncoder(capa_decoder, num_layers=num_layers)
+        self.salida = nn.Linear(d_model, n_vars)
+
+    def encode(self, x):
+        return self.a_latente(self.encoder(self.pos_enc(self.embed(x))))
+
+    def decode(self, latente):
+        return self.salida(self.decoder(self.pos_enc(self.desde_latente(latente))))
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
+
+
+# el tipo de modelo lo dice la configuración que guardó el paso 04
+_ruta_cfg = os.path.join(os.path.dirname(RUTA_MODELO), f'autoencoder_W{W}_config.json')
+CONFIG_AE = json.load(open(_ruta_cfg)) if os.path.exists(_ruta_cfg) else {'tipo': 'colapsado',
+                                                                             'latent_dim': 64}
+if CONFIG_AE['tipo'] == 'temporal':
+    modelo = AutoencoderTransformerTemporal(n_vars=len(VARIABLES), W=W,
+                                            latent_dim=CONFIG_AE['latent_dim']).to(device)
+else:
+    modelo = AutoencoderTransformer(n_vars=len(VARIABLES), W=W).to(device)
+print(f"Autoencoder: {CONFIG_AE['tipo']}, latent_dim = {CONFIG_AE['latent_dim']}")
 modelo.load_state_dict(torch.load(RUTA_MODELO, map_location=device))
 modelo.eval()
 Z, errores = [], []
@@ -217,6 +256,8 @@ with torch.no_grad():
         errores.append(((modelo.decode(z) - b) ** 2).mean(dim=(1, 2)).cpu().numpy())
         Z.append(z.cpu().numpy())
 Z = np.concatenate(Z).astype(np.float64)
+FORMA_LATENTE = Z.shape[1:]
+Z = Z.reshape(len(Z), -1)                 # el latente temporal (60, k) se aplana
 ids['error_recalculado'] = np.concatenate(errores)
 
 err = pd.read_csv(ARCHIVO_ERROR)
@@ -278,7 +319,7 @@ n_comp = int(min(PCA_MAX, np.searchsorted(
     np.cumsum(pca.explained_variance_ratio_), PCA_VARIANZA) + 1))
 pca = PCA(n_components=n_comp, random_state=SEED).fit(_zv)
 Xv, Xt = pca.transform(_zv), pca.transform(_zt)
-print(f'Latente: 64 dimensiones -> {n_comp} componentes '
+print(f'Latente {FORMA_LATENTE}: {Z.shape[1]} valores -> {n_comp} componentes '
       f'({100 * pca.explained_variance_ratio_.sum():.0f} % de la varianza)')
 
 
@@ -329,7 +370,7 @@ _kb = min(_bic, key=_bic.get)
 g = gmm(_kb, 5)
 anota(f'GMM k={_kb} (BIC)', _kb, g.predict(Xv), g.predict(Xt))
 if HDBSCAN is not None:
-    h = HDBSCAN(min_cluster_size=int(min(30, max(5, len(Xv) // 10)))).fit(Xv)
+    h = HDBSCAN(min_cluster_size=int(min(30, max(5, len(Xv) // 10))), copy=True).fit(Xv)
     _gh = len(set(h.labels_) - {-1})
     _lt = (KNeighborsClassifier(1).fit(Xv, h.labels_).predict(Xt) if _gh
            else np.full(len(Xt), -1))
