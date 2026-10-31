@@ -568,5 +568,5 @@ print('\n--- Estadísticos ---')
 print(df_limpio.describe().round(2).to_string())
 
 print('\n' + '=' * 70)
-print('LISTO. Siguiente paso: 02_reglas_y_ventanas.py')
+print('LISTO. Siguiente paso: 02_reglas_ventanas.py')
 print('=' * 70)
