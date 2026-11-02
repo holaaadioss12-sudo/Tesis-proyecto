@@ -4,7 +4,7 @@
 PASO 05c — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
 =============================================================================
 Entrada:  el modelo del paso 03b (FUENTE=oficial) o de 03a_modelos/ (FUENTE=03a), 05a_nivel_ventanas.csv
-Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png
+Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_prototipos.csv/png
 """
 import os
 import sys
@@ -237,9 +237,12 @@ class AETransformer(nn.Module):
     def encode(self, x):
         return self.encoder(self.pos_enc(self.embed(x))).mean(dim=1)
 
-    def forward(self, x):
-        h = self.encode(x).unsqueeze(1).repeat(1, self.W, 1)
+    def decode(self, z):
+        h = z.unsqueeze(1).repeat(1, self.W, 1)
         return self.salida(self.decoder(self.pos_enc(h)))
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
 
 
 class AETransformerT(nn.Module):
@@ -256,8 +259,11 @@ class AETransformerT(nn.Module):
     def encode(self, x):
         return self.a_latente(self.encoder(self.pos_enc(self.embed(x))))
 
+    def decode(self, z):
+        return self.salida(self.decoder(self.pos_enc(self.desde_latente(z))))
+
     def forward(self, x):
-        return self.salida(self.decoder(self.pos_enc(self.desde_latente(self.encode(x)))))
+        return self.decode(self.encode(x))
 
 
 class AECNNT(nn.Module):
@@ -274,8 +280,11 @@ class AECNNT(nn.Module):
     def encode(self, x):
         return self.encoder(x.transpose(1, 2)).transpose(1, 2)
 
+    def decode(self, z):
+        return self.decoder(z.transpose(1, 2)).transpose(1, 2)
+
     def forward(self, x):
-        return self.decoder(self.encode(x).transpose(1, 2)).transpose(1, 2)
+        return self.decode(self.encode(x))
 
 
 class AECNNLSTM(nn.Module):
@@ -294,9 +303,12 @@ class AECNNLSTM(nn.Module):
         h, _ = self.lstm_enc(self.conv_in(x.transpose(1, 2)).transpose(1, 2))
         return self.a_latente(self.drop(h))
 
-    def forward(self, x):
-        h, _ = self.lstm_dec(self.desde_latente(self.encode(x)))
+    def decode(self, z):
+        h, _ = self.lstm_dec(self.desde_latente(z))
         return self.conv_out(self.drop(h).transpose(1, 2)).transpose(1, 2)
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
 
 
 CLASES = {'transformer': AETransformer, 'transformer_t': AETransformerT,
@@ -560,4 +572,65 @@ else:
     print('\nSi un grupo concentra un tipo de alarma y unas variables, describe un modo de')
     print('comportamiento aunque no coincida con leve / media / grave.')
 
-print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv y 05c_silueta.png en {RUTA_EQ}')
+
+# =============================================================================
+# 9. DECODIFICAR LOS GRUPOS: ¿CÓMO ES LA VENTANA TÍPICA DE CADA UNO?
+# =============================================================================
+# El latente promedio de cada grupo pasa por el decodificador; se compara con el
+# de las ventanas sin alarma que el modelo no marca (la operación normal típica).
+if not _temporales.empty:
+    print('\n' + '=' * 72)
+    print('9. LA VENTANA TÍPICA DE CADA GRUPO (latente promedio decodificado)')
+    print('=' * 72)
+    modelo.eval()
+
+    def decodificar(Z):
+        with torch.no_grad():
+            z = torch.tensor(Z.mean(axis=0, keepdims=True), dtype=torch.float32, device=device)
+            x = modelo.decode(z)[0].cpu().numpy()                     # (60, 14), estandarizado
+        return x * std_n.to_numpy() + media_n.to_numpy()             # unidades del sensor
+
+    proto = {'normal': decodificar(Z_va[(~al_va) & (~mv)])}
+    for gr in sorted(g for g in set(l_va) if g >= 0):
+        proto[f'grupo {gr}'] = decodificar(Z_va[mv][l_va == gr])
+    # variables que más se apartan de la ventana normal típica, en desviaciones estándar
+    desvio = {n: np.abs(p - proto['normal']).mean(axis=0) / std_n.to_numpy()
+              for n, p in proto.items() if n != 'normal'}
+    filas_p = []
+    for n, p in proto.items():
+        for j, v in enumerate(VARIABLES):
+            for t in range(W):
+                filas_p.append({'prototipo': n, 'minuto': round(t * 10 / 60, 2), 'variable': v,
+                                'valor': round(float(p[t, j]), 4)})
+    pd.DataFrame(filas_p).to_csv(salida('05c_prototipos.csv'), sep=';', decimal=',', index=False,
+                                 encoding='utf-8-sig')
+    for n, dv in desvio.items():
+        top = np.argsort(-dv)[:3]
+        print(f'  {n:<9} se aparta de lo normal sobre todo en: ' + ', '.join(
+            f'{VARIABLES[j]} ({proto[n][:, j].mean() - proto["normal"][:, j].mean():+.1f}, '
+            f'{dv[j]:.1f} desv.)' for j in top))
+    importantes = list(dict.fromkeys(VARIABLES[j] for dv in desvio.values() for j in np.argsort(-dv)[:2]))[:6]
+    minutos = np.arange(W) * 10 / 60
+    fig, ejes = plt.subplots(2, 3, figsize=(14, 7), sharex=True)
+    for ax, v in zip(ejes.ravel(), importantes):
+        j = VARIABLES.index(v)
+        ax.plot(minutos, proto['normal'][:, j], 'k--', lw=1.5, label='normal típica')
+        for n in proto:
+            if n != 'normal':
+                ax.plot(minutos, proto[n][:, j], lw=1.6, label=n)
+        ax.set_title(v)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelbottom=True)
+        ax.set_xlabel('Minuto de la ventana')
+    for ax in ejes.ravel()[len(importantes):]:
+        ax.axis('off')
+    ejes.ravel()[0].legend(fontsize=8)
+    fig.suptitle(f'{EQUIPO}: ventana típica de cada grupo ({elegido.metodo}), decodificada del latente promedio')
+    fig.tight_layout()
+    fig.savefig(salida('05c_prototipos.png'), dpi=150)
+    plt.close(fig)
+    print('Entre paréntesis: diferencia promedio con la ventana normal típica, en las unidades del')
+    print('sensor, y en desviaciones estándar. Gráfico: 05c_prototipos.png')
+
+print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_prototipos.csv '
+      f'y 05c_prototipos.png en {RUTA_EQ}')

@@ -4,7 +4,7 @@
 PASO 05b — NIVEL DE ANOMALÍA REVISADO: REPETICIÓN Y COMBINACIÓN DE ALARMAS
 =============================================================================
 Entrada:  {EQUIPO}_activos_por_ventana_W60.csv, 05a_nivel_ventanas.csv, error del paso 04
-Salida:   05b_nivel_revisado.csv, 05b_comparacion.csv, 05b_cruces.csv
+Salida:   05b_nivel_revisado.csv, 05b_comparacion.csv, 05b_cruces.csv, 05b_variables_por_nivel.csv
 """
 import os
 import sys
@@ -161,7 +161,7 @@ print('=' * 72)
 ESCALAS = {'actual': 'nivel_actual', 'presencia': 'nivel_presencia', 'combinado': 'nivel_combinado'}
 hay_error = os.path.exists(ARCHIVO_ERROR)
 if hay_error:
-    _e = pd.read_csv(ARCHIVO_ERROR, usecols=lambda c: c in LLAVES + ['conjunto', AE])
+    _e = pd.read_csv(ARCHIVO_ERROR, usecols=lambda c: c in LLAVES + ['conjunto', AE] or c.startswith('evar_'))
     d = d.merge(_e, on=LLAVES, how='left')
     print(f'Error del autoencoder: {ARCHIVO_ERROR}')
 else:
@@ -208,6 +208,38 @@ print(cruces.to_string())
 
 
 # =============================================================================
+# 4b. ¿QUÉ VARIABLES EXPLICAN CADA NIVEL? (error por variable del paso 04)
+# =============================================================================
+EVAR = [c for c in d.columns if c.startswith('evar_')]
+vpn = pd.DataFrame()
+if EVAR:
+    print('\n' + '=' * 72)
+    print('4b. PARTICIPACIÓN DE CADA VARIABLE EN EL ERROR, POR NIVEL (validación y prueba)')
+    print('=' * 72)
+    _ev = d[EVAR].to_numpy()
+    _ok = ~np.isnan(_ev).any(axis=1)
+    _aporte = np.where(_ok[:, None], _ev / np.where(_ok, _ev.sum(axis=1), 1)[:, None], np.nan)
+    _nombres = [c[len('evar_'):] for c in EVAR]
+    filas_v = []
+    for esc, col in ESCALAS.items():
+        for n in NIVELES:
+            s = _ok & (d[col] == n).to_numpy()
+            if s.sum() == 0:
+                continue
+            media = _aporte[s].mean(axis=0)
+            top = np.argsort(-media)[:3]
+            fila = {'escala': esc, 'nivel': n[2:], 'ventanas': int(s.sum())}
+            fila.update({f'var_{i + 1}': f'{_nombres[j]} {100 * media[j]:.0f} %' for i, j in enumerate(top)})
+            fila.update({f'pct_{v}': round(100 * m, 1) for v, m in zip(_nombres, media)})
+            filas_v.append(fila)
+    vpn = pd.DataFrame(filas_v)
+    print(vpn[['escala', 'nivel', 'ventanas', 'var_1', 'var_2', 'var_3']].to_string(index=False))
+    print('Porcentaje: parte del error de la ventana que aporta esa variable, en promedio.')
+else:
+    print('\nEl archivo del paso 04 no trae el error por variable (evar_*): se omite la sección 4b.')
+
+
+# =============================================================================
 # 5. EJEMPLOS CON VENTANAS REALES
 # =============================================================================
 print('\n' + '=' * 72)
@@ -240,4 +272,7 @@ d[LLAVES + ['timestamp_inicio', 'conjunto_fecha', 'alarmas', 'N_empinada', 'nive
     salida('05b_nivel_revisado.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
 comp.to_csv(salida('05b_comparacion.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
 cruces.to_csv(salida('05b_cruces.csv'), sep=';', encoding='utf-8-sig')
-print(f'\nGuardado: 05b_nivel_revisado.csv, 05b_comparacion.csv y 05b_cruces.csv en {RUTA_EQ}')
+if len(vpn):
+    vpn.to_csv(salida('05b_variables_por_nivel.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
+print(f'\nGuardado: 05b_nivel_revisado.csv, 05b_comparacion.csv, 05b_cruces.csv y '
+      f'05b_variables_por_nivel.csv en {RUTA_EQ}')
