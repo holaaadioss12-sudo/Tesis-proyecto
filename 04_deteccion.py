@@ -406,7 +406,7 @@ print('azar_pct: lo que acertaría si esa variable se repartiera como en las ven
 # 4. CRITERIO NORMAL VS. ANÓMALO
 # =============================================================================
 print('\n' + '=' * 70)
-print('4. CRITERIO DEL PROFESOR: ¿el error es mayor en las ventanas malas?')
+print('4. CRITERIO NORMAL VS. ANÓMALO: ¿el error es mayor en las ventanas con alarma?')
 print('=' * 70)
 
 resumen = m.groupby('es_normal')['error_reconstruccion'].agg(['count', 'mean', 'median', 'std'])
@@ -418,8 +418,8 @@ err_anomal = m.loc[~m.es_normal, 'error_reconstruccion']
 razon_media = err_anomal.mean() / err_normal.mean()
 razon_mediana = err_anomal.median() / err_normal.median()
 
-print(f'\nRazón anómalo/normal en PROMEDIOS: {razon_media:.2f}x   <- referencia: 3,43x')
-print(f'Razón anómalo/normal en MEDIANAS : {razon_mediana:.2f}x   <- referencia: 3,46x')
+print(f'\nRazón anómalo/normal en PROMEDIOS: {razon_media:.2f}x')
+print(f'Razón anómalo/normal en MEDIANAS : {razon_mediana:.2f}x')
 print('\nQue las dos razones sean parecidas es lo importante: significa que la')
 print('separación NO la producen unos pocos casos extremos, sino que toda la')
 print('distribución está corrida.')

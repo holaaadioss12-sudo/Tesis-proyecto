@@ -45,7 +45,7 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12    # ventanas cada 2 min -- traslape alto, más ejemplos
 STRIDE_EVAL = W      # sin traslape en val/test
-EPOCHS_MAX = 100
+EPOCHS_MAX = int(_os.environ.get('EPOCAS_MAX', 100))
 PACIENCIA = 15       # épocas sin mejorar la pérdida de validación
 
 # Autoencoder temporal: latente de 60 x LATENT_DIM (reduce variables, conserva el tiempo).
@@ -66,8 +66,10 @@ RUTA_EPOCAS = f'{RUTA_EQ}/03b_comparacion_epocas.csv'
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
-REF = {'val_mse': 0.03057, 'test_mse': 0.03707,
-       'err_normal': 0.0087, 'err_anomalo': 0.0302, 'razon': 3.46, 'auc': 0.8358}
+# Modelo anterior de CR010 (latente de 64, entrenado con todas las ventanas)
+REF = ({'val_mse': 0.03057, 'test_mse': 0.03707,
+        'err_normal': 0.0087, 'err_anomalo': 0.0302, 'razon': 3.46, 'auc': 0.8358}
+       if EQUIPO == 'CR010' else None)
 
 
 # =============================================================================
@@ -177,7 +179,7 @@ np.savez(RUTA_NORMALIZADOR,
          media=params_norm['media'].to_numpy(),
          std=params_norm['std'].to_numpy(),
          variables=np.array(VARIABLES, dtype=object))
-print(f'Normalizador guardado: {RUTA_NORMALIZADOR} (idéntico al del 04 original)')
+print(f'Normalizador guardado: {RUTA_NORMALIZADOR}')
 
 
 # =============================================================================
@@ -213,17 +215,15 @@ for nombre, X, nm in [('train', X_train, norm_train), ('val', X_val, norm_val),
 X_train_normal = X_train[norm_train]
 X_val_normal = X_val[norm_val]
 
-print(f'\nEntrenamiento ANTERIOR : {len(X_train):>7,} ventanas (todas)')
-print(f'Entrenamiento AHORA    : {len(X_train_normal):>7,} ventanas (solo normales)')
+print(f'\nVentanas de entrenamiento: {len(X_train):>7,} (todas)')
+print(f'Se entrena con         : {len(X_train_normal):>7,} ventanas (solo normales)')
 print(f'Validación para parar  : {len(X_val_normal):>7,} ventanas normales')
 
 if len(X_train_normal) < 3000:
-    print('\n⚠ Quedan pocas ventanas normales para entrenar. Con 135.758 parámetros')
+    print('\n⚠ Quedan pocas ventanas normales para entrenar. Con unos 136.000 parámetros')
     print('  hay riesgo de sobreajuste. Si pasa, bajar STRIDE_TRAIN a 6 para')
     print('  generar más ventanas, o reducir d_model de 64 a 32.')
 
-ratio = len(X_train_normal) * W * len(VARIABLES) / 135758
-print(f'Relación datos/parámetros: {ratio:.0f} a 1  (antes era ~314 a 1)')
 
 
 class VentanasDataset(Dataset):
@@ -339,6 +339,7 @@ _n_latente = int(np.prod(_forma_latente))
 print(f'\nModelo: {TIPO_AE} | {n_params:,} parámetros entrenables')
 print(f'Formas: entrada ({W}, {n_vars}) -> latente {_forma_latente} -> salida ({W}, {n_vars})')
 print(f'Compresión: {W * n_vars} números -> {_n_latente} ({W * n_vars / _n_latente:.1f}x)')
+print(f'Relación datos/parámetros: {len(X_train_normal) * W * n_vars / n_params:.0f} a 1')
 _json.dump({'tipo': TIPO_AE, 'latent_dim': LATENT_DIM if TIPO_AE == 'temporal' else 64,
             'forma_latente': list(_forma_latente), 'd_model': 64, 'nhead': 4, 'num_layers': 2,
             'dim_ff': 128, 'dropout': 0.1, 'W': W, 'variables': VARIABLES},
@@ -474,21 +475,16 @@ print(f'\nCurva por época guardada: {RUTA_EPOCAS}')
 
 # --- La comprobación que faltaba ------------------------------------------
 _ep_final = len(historial['train'])
-if mejor_epoca >= _ep_final:
+if not terminado:
     print('\n' + '!' * 70)
-    print('ATENCIÓN: el mínimo de pérdida de validación cayó en la ÚLTIMA época')
-    print(f'corrida ({_ep_final}). La pérdida seguía bajando, así que el modelo')
-    print('NO convergió y "mejor época" es en realidad "la última época". Con')
-    print('eso, cualquier comparación entre los dos criterios de checkpoint')
-    print('queda confundida con el techo del entrenamiento, y no se puede')
-    print(f'responder por qué se entrenó {_ep_final} épocas y no otra cantidad.')
-    print(f'Subí EPOCHS_MAX (hoy {EPOCHS_MAX}) y volvé a correr.')
-    print('Esto es exactamente lo que pasaba con EPOCHS_MAX = 20.')
+    print(f'ATENCIÓN: llegó al máximo de {EPOCHS_MAX} épocas sin activar la parada temprana.')
+    print(f'Mejor época: {mejor_epoca}; {espera} de {PACIENCIA} épocas sin mejorar.')
+    print('El entrenamiento no terminó por el criterio de validación. Para seguir,')
+    print('corre de nuevo con EPOCAS_MAX más alto: retoma desde la época siguiente.')
     print('!' * 70)
 else:
-    print(f'\nConvergió: mínimo de pérdida en la época {mejor_epoca} de '
-          f'{_ep_final} corridas ({_ep_final - mejor_epoca} épocas sin mejorar).')
-    print('Ahora sí la comparación entre criterios de checkpoint es limpia.')
+    print(f'\nConvergió: parada temprana en la época {_ep_final}, mínimo de pérdida '
+          f'en la época {mejor_epoca} ({PACIENCIA} épocas sin mejorar).')
 
 
 # =============================================================================
@@ -519,16 +515,18 @@ print('=' * 70)
 print(f'Checkpoint por menor pérdida  : época {mejor_epoca}')
 print(f'Checkpoint por mayor separación: época {mejor_epoca_sep}')
 print()
-cab = f'{"":<34}{"ANTERIOR":>12}{"menor pérdida":>16}{"mayor separación":>19}'
+_ref = REF or {}
+_col = (lambda v: f'{v:>12.4f}') if REF else (lambda v: '')
+cab = f'{"":<34}' + (f'{"ANTERIOR":>12}' if REF else '') + f'{"menor pérdida":>16}{"mayor separación":>19}'
 print(cab)
 print('-' * len(cab))
 for nombre, clave, ref in [
-        ('Error mediano, normales', 'err_norm', REF['err_normal']),
-        ('Error mediano, anómalas', 'err_anom', REF['err_anomalo']),
-        ('Razón anómala / normal', 'razon', REF['razon']),
-        ('AUC normal vs. anómala', 'auc', REF['auc'])]:
-    print(f'{nombre:<34}{ref:>12.4f}{m_perdida[clave]:>16.4f}{m_separacion[clave]:>19.4f}')
-print(f'{"MSE en test":<34}{REF["test_mse"]:>12.4f}'
+        ('Error mediano, normales', 'err_norm', _ref.get('err_normal')),
+        ('Error mediano, anómalas', 'err_anom', _ref.get('err_anomalo')),
+        ('Razón anómala / normal', 'razon', _ref.get('razon')),
+        ('AUC normal vs. anómala', 'auc', _ref.get('auc'))]:
+    print(f'{nombre:<34}{_col(ref)}{m_perdida[clave]:>16.4f}{m_separacion[clave]:>19.4f}')
+print(f'{"MSE en test":<34}{_col(_ref.get("test_mse"))}'
       f'{m_perdida["mse_test"]:>16.4f}{m_separacion["mse_test"]:>19.4f}')
 
 print()
@@ -536,7 +534,7 @@ mejor = max([('menor pérdida', m_perdida), ('mayor separación', m_separacion)]
             key=lambda x: x[1]['razon'])
 print(f'El mejor detector es el checkpoint por {mejor[0]}: '
       f'razón {mejor[1]["razon"]:.2f}x, AUC {mejor[1]["auc"]:.4f}')
-if m_separacion['razon'] > REF['razon']:
+if REF and m_separacion['razon'] > REF['razon']:
     print(f'Frente al modelo entrenado con todo ({REF["razon"]:.2f}x), la mejora es de '
           f'{m_separacion["razon"] / REF["razon"]:.1f} veces.')
 
@@ -571,8 +569,9 @@ ejes[0].set_title('Pérdida de reconstrucción')
 ejes[0].legend(); ejes[0].grid(alpha=.3)
 
 ejes[1].plot(historial['razon'], color='#E8833A', linewidth=1.8, label='razón anómala/normal')
-ejes[1].axhline(REF['razon'], color='gray', linestyle='--', linewidth=1,
-                label=f'modelo anterior ({REF["razon"]:.2f}x)')
+if REF:
+    ejes[1].axhline(REF['razon'], color='gray', linestyle='--', linewidth=1,
+                    label=f'modelo anterior ({REF["razon"]:.2f}x)')
 ejes[1].axvline(pico - 1, color='#2E7D32', linestyle=':', label=f'pico ({pico})')
 ejes[1].set_xlabel('Época'); ejes[1].set_ylabel('Razón')
 ejes[1].set_title('Separación entre ventanas normales y anómalas')

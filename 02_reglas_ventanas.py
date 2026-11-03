@@ -684,9 +684,8 @@ print('  banda_w          -> empírica, independiente de la tabla de criticidad'
 print('El grado de acuerdo entre las tres es un RESULTADO, no un paso')
 print('intermedio: es lo que compensa que la criticidad sea elicitación de un')
 print('solo experto, no conversada con los operadores.')
-print('\nY el sensor que alcanza el máximo (columna sensor_origen) contesta')
-print('directamente lo que pidió el profesor: "faltaría determinar cuál es el')
-print('que está originando la condición".')
+print('\nY el sensor que alcanza el máximo (columna sensor_origen) indica cuál')
+print('está originando la condición.')
 
 del _X, _Xn
 

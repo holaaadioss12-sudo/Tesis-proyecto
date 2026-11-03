@@ -138,9 +138,9 @@ for nom, col in DETECTORES.items():
     print(f'  {nom:<16} umbral P{PERCENTIL_UMBRAL} = {u:.5f} | marca el '
           f'{100 * (_te_q[col] > u).mean():5.1f} % de las quietas de prueba')
 print('\nTodos calibrados para marcar ~5 % de las quietas de VALIDACIÓN. Si en')
-print('prueba marcan mucho más, es la deriva entre períodos que ya mostró la')
-print('Fase B: se reporta, y por eso lo que sigue compara detectores entre sí')
-print('y contra el azar, no contra un 5 % ideal.')
+print('prueba marcan mucho más, es deriva entre períodos: se reporta, y por eso')
+print('lo que sigue compara detectores entre sí y contra el azar, no contra un')
+print('5 % ideal.')
 
 print('\n' + '=' * 72)
 print('2b. DERIVA DE CALIBRACIÓN ENTRE VALIDACIÓN Y PRUEBA (ventanas quietas)')

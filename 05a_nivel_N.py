@@ -211,8 +211,8 @@ print(ventanas.loc[ventanas.N_lineal > 0, ['N_lineal', 'N_empinada']]
       .describe(percentiles=[.25, .5, .75, .9, .99]).round(1).to_string())
 
 # Ejemplo con estos pesos
-print('\nEl ejemplo del profesor (una regla de criticidad 2 activada 20 veces')
-print('contra una de criticidad 1 activada una vez):')
+print('\nEjemplo: una regla de criticidad 2 activada 20 veces contra una de')
+print('criticidad 1 activada una vez:')
 for esc, p in ESCALAS.items():
     print(f'  escala {esc:<9} 20 x {p[2]} = {20 * p[2]:>3}   contra   1 x {p[1]} = {p[1]}')
 
@@ -501,7 +501,7 @@ print(f'\nEl que más coincide con las bandas de N (elegido en validación): '
 print(f'Los grupos mejor separados (silueta): {_sil.metodo} sobre '
       f'{_sil.representacion} (silueta {_sil.silueta_val})')
 _k3 = agrup[agrup.metodo == 'K-means k=3']
-print('K-means con los 3 grupos que pidió el profesor: ' + ' | '.join(
+print('K-means con 3 grupos (leve / media / grave): ' + ' | '.join(
     f'{r.representacion} ARI {r.ARI_test}' for r in _k3.itertuples()))
 for rep, _t in tablas_k3.items():
     orden = (_t.groupby('grupo')[N_PRINC].median().sort_values().index)
