@@ -57,6 +57,8 @@ ARCHIVO_LIMPIO = f'{RUTA_EQ}/{EQUIPO}_limpio.csv'
 RUTA_MODELO = f'{RUTA_EQ}/autoencoder_W{W}_normales.pt'          # menor pérdida
 RUTA_MODELO_SEP = f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt'  # mayor separación
 RUTA_CONFIG = f'{RUTA_EQ}/autoencoder_W{W}_config.json'
+RUTA_ESTADO = f'{RUTA_EQ}/autoencoder_W{W}_estado_entrenamiento.pt'   # para retomar si se corta
+REENTRENAR = _os.environ.get('REENTRENAR', '0') == '1'                 # 1: ignora el estado guardado
 RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'
 RUTA_CURVA = f'{RUTA_EQ}/03b_curva_entrenamiento.png'
 RUTA_EPOCAS = f'{RUTA_EQ}/03b_comparacion_epocas.csv'
@@ -98,7 +100,7 @@ def segmentar_tramos_continuos(df, freq='10s', max_gap=1):
 
 tramos = segmentar_tramos_continuos(df)
 tramos = [t for t in tramos if len(t) >= W]
-print(f'Tramos útiles: {len(tramos):,}   <- esperado: 1.929')
+print(f'Tramos útiles: {len(tramos):,}')
 
 
 # =============================================================================
@@ -375,8 +377,31 @@ mejor_epoca_sep = 0
 espera = 0
 historial = {'train': [], 'val_normal': [], 'err_norm': [], 'err_anom': [],
              'razon': [], 'auc': []}
+epoca_inicial, terminado = 1, False
 
-for epoch in range(1, EPOCHS_MAX + 1):
+# si una corrida anterior se cortó, se retoma desde la última época guardada
+_config_actual = {'tipo': TIPO_AE, 'latent_dim': LATENT_DIM}
+if _os.path.exists(RUTA_ESTADO) and not REENTRENAR:
+    _est = torch.load(RUTA_ESTADO, map_location=device, weights_only=False)
+    if _est['config'] == _config_actual:
+        modelo.load_state_dict(_est['modelo'])
+        optimizador.load_state_dict(_est['optimizador'])
+        mejor_val, mejor_separacion = _est['mejor_val'], _est['mejor_separacion']
+        mejor_epoca, mejor_epoca_sep, espera = _est['mejor_epoca'], _est['mejor_epoca_sep'], _est['espera']
+        historial, terminado = _est['historial'], _est['terminado']
+        epoca_inicial = _est['epoca'] + 1
+        torch.set_rng_state(_est['rng_cpu'].cpu())
+        if torch.cuda.is_available() and _est.get('rng_cuda'):
+            torch.cuda.set_rng_state_all([r.cpu() for r in _est['rng_cuda']])
+        print(f'\nSe encontró un entrenamiento guardado: '
+              + ('ya había terminado, no se repite.' if terminado or epoca_inicial > EPOCHS_MAX
+                 else f'se retoma desde la época {epoca_inicial}.'))
+    else:
+        print(f'\nHay un entrenamiento guardado con otra configuración ({_est["config"]}): se empieza de cero.')
+
+for epoch in range(epoca_inicial, EPOCHS_MAX + 1):
+    if terminado:
+        break
     modelo.train()
     perdida_train = 0.0
     for batch in train_loader:
@@ -431,7 +456,15 @@ for epoch in range(1, EPOCHS_MAX + 1):
         torch.save(modelo.state_dict(), RUTA_MODELO_SEP)
         mejor_epoca_sep = epoch
 
-    if espera >= PACIENCIA:
+    terminado = espera >= PACIENCIA
+    torch.save({'config': _config_actual, 'epoca': epoch, 'terminado': terminado,
+                'modelo': modelo.state_dict(), 'optimizador': optimizador.state_dict(),
+                'mejor_val': mejor_val, 'mejor_separacion': mejor_separacion,
+                'mejor_epoca': mejor_epoca, 'mejor_epoca_sep': mejor_epoca_sep, 'espera': espera,
+                'historial': historial, 'rng_cpu': torch.get_rng_state(),
+                'rng_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None},
+               RUTA_ESTADO)
+    if terminado:
         print(f'\nEarly stopping en la época {epoch} (sin mejora en {PACIENCIA})')
         break
 

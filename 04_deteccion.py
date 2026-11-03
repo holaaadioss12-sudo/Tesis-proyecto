@@ -107,7 +107,7 @@ tramos = [t for t in tramos if len(t) >= W]
 
 # ---- LA RE-NUMERACIÓN QUE NO SE PUEDE OLVIDAR --------------------------
 tramos_con_id = [(i, t) for i, t in enumerate(tramos)]
-print(f'Tramos útiles: {len(tramos_con_id):,}   <- esperado: 1.929')
+print(f'Tramos útiles: {len(tramos_con_id):,}')
 
 
 # El mismo corte por fecha que usan los pasos 03 y 04.

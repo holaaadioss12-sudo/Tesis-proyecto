@@ -89,7 +89,7 @@ tramos = segmentar_tramos_continuos(df)
 print(f'Tramos encontrados: {len(tramos):,}')
 
 tramos = [t for t in tramos if len(t) >= W]
-print(f'Tramos útiles (>= {W} registros): {len(tramos):,}   <- esperado: 1.929')
+print(f'Tramos útiles (>= {W} registros): {len(tramos):,}')
 
 
 # =============================================================================
