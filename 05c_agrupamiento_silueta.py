@@ -4,7 +4,7 @@
 PASO 05c — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
 =============================================================================
 Entrada:  el modelo del paso 03b (FUENTE=oficial) o de 03a_modelos/ (FUENTE=03a), 05a_nivel_ventanas.csv
-Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_prototipos.csv/png
+Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_umap.png, 05c_prototipos.csv/png
 """
 import os
 import sys
@@ -43,6 +43,12 @@ except ImportError:
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
+try:
+    import umap
+except ImportError:
+    umap = None
+import warnings
+warnings.filterwarnings('ignore', message='.*n_jobs value.*')
 
 from reglas_engine import evaluar_reglas
 
@@ -62,6 +68,8 @@ PCA_VARIANZA, PCA_MAX = 0.80, 20
 MAX_SILUETA = 5000
 TOL_ERROR = 1e-3
 MAX_RUIDO = 0.50                 # DBSCAN/HDBSCAN con más ruido no se eligen
+UMAP_DIMS = (2, 5, 10)           # UMAP sobre el latente antes de agrupar (McConville et al., 2021)
+UMAP_VECINOS = 20
 BANDA = 'banda_N_empinada_natural'
 NIVELES = ['1_leve', '2_media', '3_grave']
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
@@ -400,7 +408,7 @@ def preparar(A_va, A_te):
     n = int(min(PCA_MAX, a_va.shape[1], np.searchsorted(np.cumsum(p.explained_variance_ratio_),
                                                          PCA_VARIANZA) + 1))
     p = PCA(n_components=n, random_state=SEED).fit(a_va)
-    return p.transform(a_va), p.transform(a_te), n
+    return p.transform(a_va), p.transform(a_te), n, a_va, a_te
 
 
 if Z_va.ndim == 3:
@@ -445,11 +453,14 @@ def ari(b, lab, m):
 filas, etiquetas = [], {}
 
 
-def anota(rep, metodo, k, l_va, l_te, Xv, Xt):
-    fila = {'representacion': rep, 'metodo': metodo, 'grupos': k,
+def anota(rep, metodo, k, l_va, l_te, Xv, Xt, espacio='PCA', Lv=None, Lt=None):
+    s_v, s_t = silueta(Xv, l_va), silueta(Xt, l_te)
+    fila = {'representacion': rep, 'espacio': espacio, 'metodo': metodo, 'grupos': k,
             'ruido_pct': round(100 * float((l_va < 0).mean()), 1),
-            'silueta_val': round(silueta(Xv, l_va), 3),
-            'silueta_test': round(silueta(Xt, l_te), 3),
+            'silueta_val': round(s_v, 3),
+            'silueta_test': round(s_t, 3),
+            'silueta_val_latente': round(s_v if Lv is None else silueta(Lv, l_va), 3),
+            'silueta_test_latente': round(s_t if Lt is None else silueta(Lt, l_te), 3),
             'ARI_nivel_val': round(ari(bv, l_va, pos_v), 3),
             'ARI_nivel_test': round(ari(bt, l_te, pos_t), 3),
             'NMI_nivel_test': round(normalized_mutual_info_score(bt[pos_t], l_te[pos_t]), 3),
@@ -458,28 +469,28 @@ def anota(rep, metodo, k, l_va, l_te, Xv, Xt):
     etiquetas[(rep, metodo)] = (l_va, l_te)
 
 
-for rep, (A_va, A_te) in REPRES.items():
-    Xv, Xt, n = preparar(A_va, A_te)
-    print(f'\n{rep}: {A_va.shape[1]} valores -> {n} componentes principales')
+def agrupar(rep, Xv, Xt, espacio='PCA', Lv=None, Lt=None, con_dbscan=True):
+    """K-means (k = 2 a 20), DBSCAN, HDBSCAN y GMM sobre un espacio."""
+    extra = dict(espacio=espacio, Lv=Lv, Lt=Lt)
     for k in K_RANGO:
         if k >= len(Xv):
             break
         km = KMeans(n_clusters=k, n_init=10, random_state=SEED).fit(Xv)
-        anota(rep, f'K-means k={k}', k, km.labels_, km.predict(Xt), Xv, Xt)
+        anota(rep, f'K-means k={k}', k, km.labels_, km.predict(Xt), Xv, Xt, **extra)
     min_s = 2 * Xv.shape[1]                        # Sander et al. (1998)
     dk = (np.sort(NearestNeighbors(n_neighbors=min_s).fit(Xv).kneighbors(Xv)[0][:, -1])
-          if len(Xv) > min_s else None)
+          if con_dbscan and len(Xv) > min_s else None)
     for q in (CUANTILES_EPS if dk is not None else []):
         eps = float(np.quantile(dk, q))
         db = DBSCAN(eps=eps, min_samples=min_s).fit(Xv)
         g = len(set(db.labels_) - {-1})
         l_te = (KNeighborsClassifier(1).fit(Xv, db.labels_).predict(Xt) if g else np.full(len(Xt), -1))
-        anota(rep, f'DBSCAN eps=P{int(100 * q)}', g, db.labels_, l_te, Xv, Xt)
+        anota(rep, f'DBSCAN eps=P{int(100 * q)}', g, db.labels_, l_te, Xv, Xt, **extra)
     if HDBSCAN is not None:
         h = HDBSCAN(min_cluster_size=int(min(30, max(5, len(Xv) // 10))), copy=True).fit(Xv)
         g = len(set(h.labels_) - {-1})
         l_te = (KNeighborsClassifier(1).fit(Xv, h.labels_).predict(Xt) if g else np.full(len(Xt), -1))
-        anota(rep, 'HDBSCAN', g, h.labels_, l_te, Xv, Xt)
+        anota(rep, 'HDBSCAN', g, h.labels_, l_te, Xv, Xt, **extra)
     bic = {}
     for k in range(2, 11):
         try:
@@ -491,7 +502,42 @@ for rep, (A_va, A_te) in REPRES.items():
         kb = min(bic, key=bic.get)
         gm = GaussianMixture(kb, covariance_type='full', reg_covar=1e-4, n_init=5,
                              random_state=SEED).fit(Xv)
-        anota(rep, f'GMM k={kb} (BIC)', kb, gm.predict(Xv), gm.predict(Xt), Xv, Xt)
+        anota(rep, f'GMM k={kb} (BIC)', kb, gm.predict(Xv), gm.predict(Xt), Xv, Xt, **extra)
+
+
+ESPACIOS = {}
+for rep, (A_va, A_te) in REPRES.items():
+    Xv, Xt, n, Sv, St = preparar(A_va, A_te)
+    ESPACIOS[rep] = (Xv, Xt, Sv, St)
+    print(f'\n{rep}: {A_va.shape[1]} valores -> {n} componentes principales')
+    agrupar(rep, Xv, Xt)
+
+
+# =============================================================================
+# 6b. UMAP SOBRE EL LATENTE Y LUEGO AGRUPAMIENTO
+# =============================================================================
+# UMAP conserva los vecinos cercanos del latente en 2, 5 o 10 dimensiones y sobre
+# eso se agrupa (McConville et al., 2021). La silueta en el espacio UMAP sale
+# optimista; por eso cada partición se mide también en el latente (PCA).
+UMAP2D = {}
+if umap is None:
+    print('\nUMAP no está instalado: se omite la sección 6b (en Colab: !pip install umap-learn).')
+else:
+    print('\n' + '=' * 72)
+    print('6b. UMAP SOBRE EL LATENTE Y LUEGO AGRUPAMIENTO')
+    print('=' * 72)
+    for rep in [r for r in REPRES if r.startswith('temporal')]:
+        Xv, Xt, Sv, St = ESPACIOS[rep]
+        if len(Sv) <= UMAP_VECINOS + 1:
+            continue
+        for d in UMAP_DIMS:
+            red_u = umap.UMAP(n_components=d, n_neighbors=UMAP_VECINOS, min_dist=0.0,
+                              random_state=SEED).fit(Sv)
+            Uv, Ut = red_u.embedding_, red_u.transform(St)
+            if d == 2:
+                UMAP2D[rep] = Uv
+            print(f'{rep} + UMAP {d}D')
+            agrupar(f'{rep} + UMAP {d}D', Uv, Ut, f'UMAP {d}D', Xv, Xt, con_dbscan=False)
 
 agrup = pd.DataFrame(filas)
 agrup.to_csv(salida('05c_agrupamiento.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
@@ -509,13 +555,15 @@ _ok = agrup[(agrup.grupos >= 2) & (agrup.ruido_pct <= 100 * MAX_RUIDO)].dropna(s
 mejores = _ok.loc[_ok.groupby('representacion').silueta_val.idxmax()]
 print(mejores.to_string(index=False))
 print('\nSilueta: sobre 0,50 hay grupos razonables; 0,25 o menos, no hay grupos claros.')
+print('silueta_val: medida donde se agrupó (PCA o UMAP). silueta_val_latente: la misma partición')
+print('medida en el latente (PCA); es la que permite comparar PCA con UMAP.')
 print('ARI de nivel: 0 = azar, 1 = los mismos grupos que leve / media / grave.')
 print('NMI de tipo mayor que NMI de nivel: los grupos se parecen más al tipo de alarma.')
 
 fig, ejes = plt.subplots(1, 2, figsize=(12, 4.5))
-for rep in REPRES:
+for rep in agrup.representacion.unique():
     s = agrup[(agrup.representacion == rep) & agrup.metodo.str.startswith('K-means')]
-    etq = rep.split(' (')[0]
+    etq = rep.split(' (')[0] + (rep[rep.index(' + UMAP'):] if ' + UMAP' in rep else '')
     ejes[0].plot(s.grupos, s.silueta_val, 'o-', ms=3, label=etq)
     ejes[1].plot(s.grupos, s.ARI_nivel_val, 'o-', ms=3, label=etq)
 ejes[0].axhline(0.25, color='k', ls=':', lw=1)
@@ -543,9 +591,10 @@ _temporales = mejores[mejores.representacion.str.startswith('temporal')]
 if _temporales.empty:
     print('Ningún agrupamiento temporal tiene al menos 2 grupos con poco ruido.')
 else:
-    elegido = _temporales.loc[_temporales.silueta_val.idxmax()]
+    elegido = _temporales.loc[_temporales.silueta_val_latente.idxmax()]
     l_va, _ = etiquetas[(elegido.representacion, elegido.metodo)]
-    print(f'{elegido.representacion} · {elegido.metodo} · silueta {elegido.silueta_val}')
+    print(f'{elegido.representacion} · {elegido.metodo} · silueta en el latente '
+          f'{elegido.silueta_val_latente} (elegido por la silueta en el latente)')
     ev_m = ev_va[mv]
     aporte = ev_m / ev_m.sum(axis=1, keepdims=True)
     perfil = []
@@ -571,6 +620,30 @@ else:
     perfil.to_csv(salida('05c_perfil_grupos.csv'), sep=';', decimal=',', index=False, encoding='utf-8-sig')
     print('\nSi un grupo concentra un tipo de alarma y unas variables, describe un modo de')
     print('comportamiento aunque no coincida con leve / media / grave.')
+
+    # mapa UMAP 2D de las ventanas marcadas: por grupo y por nivel
+    _base = elegido.representacion.split(' + UMAP')[0]
+    if _base in UMAP2D:
+        U = UMAP2D[_base]
+        fig, ejes = plt.subplots(1, 2, figsize=(13, 5.5))
+        for gr in sorted(set(l_va)):
+            s = l_va == gr
+            ejes[0].scatter(U[s, 0], U[s, 1], s=6, alpha=0.6,
+                            c='lightgray' if gr < 0 else None, label='ruido' if gr < 0 else f'grupo {gr}')
+        for nv, col in zip(['0_normal'] + NIVELES, ['#9e9e9e', '#4caf50', '#ff9800', '#d32f2f']):
+            s = bv == nv
+            ejes[1].scatter(U[s, 0], U[s, 1], s=6, alpha=0.6, c=col, label=nv)
+        ejes[0].set_title(f'Grupos: {elegido.metodo} ({elegido.espacio})')
+        ejes[1].set_title('Nivel de N de cada ventana')
+        for a in ejes:
+            a.set(xlabel='UMAP 1', ylabel='UMAP 2')
+            a.legend(fontsize=8, markerscale=2)
+            a.grid(alpha=0.3)
+        fig.suptitle(f'{EQUIPO}: ventanas marcadas en el mapa UMAP 2D del latente (validación)')
+        fig.tight_layout()
+        fig.savefig(salida('05c_umap.png'), dpi=150)
+        plt.close(fig)
+        print('Mapa UMAP 2D por grupo y por nivel: 05c_umap.png')
 
 
 # =============================================================================
@@ -632,5 +705,5 @@ if not _temporales.empty:
     print('Entre paréntesis: diferencia promedio con la ventana normal típica, en las unidades del')
     print('sensor, y en desviaciones estándar. Gráfico: 05c_prototipos.png')
 
-print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_prototipos.csv '
-      f'y 05c_prototipos.png en {RUTA_EQ}')
+print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_umap.png, '
+      f'05c_prototipos.csv y 05c_prototipos.png en {RUTA_EQ}')

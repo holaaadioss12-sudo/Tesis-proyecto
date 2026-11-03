@@ -11,8 +11,9 @@ Detección de anomalías en chancadores con un autoencoder temporal. Los scripts
 | 04 | `04_deteccion.py` | Error de cada ventana, error por variable, umbral por variable | pasos 02 y 03b | `{EQUIPO}_error_reconstruccion_W60.csv`, `04_umbral_por_variable.csv`, `04_atribucion_variables.csv` |
 | 05a | `05a_nivel_N.py` | Nivel N, cortes leve / media / grave y agrupamiento de las variables | pasos 02 y 04 | `05a_nivel_ventanas.csv`, `05a_cortes.csv`, `05a_agrupamiento.csv` |
 | 05b | `05b_nivel_revisado.py` | N por presencia y nivel combinado (criticidad x subsistemas) | pasos 02, 04 y 05a | `05b_nivel_revisado.csv`, `05b_comparacion.csv`, `05b_cruces.csv` |
-| 05c | `05c_agrupamiento_silueta.py` | K-means, DBSCAN, HDBSCAN y GMM sobre el latente, con silueta | pasos 03b, 04 y 05a | `05c_agrupamiento.csv`, `05c_perfil_grupos.csv`, `05c_silueta.png` |
+| 05c | `05c_agrupamiento_silueta.py` | K-means, DBSCAN, HDBSCAN y GMM sobre el latente, también después de UMAP, con silueta | pasos 03b, 04 y 05a | `05c_agrupamiento.csv`, `05c_perfil_grupos.csv`, `05c_silueta.png`, `05c_umap.png` |
 | 06 | `06_anticipacion.py` | Anticipación, deriva y comparación con z_medias e índice W | pasos 02 y 04 | `06_resumen.csv`, `06_precursores.csv`, `06_deriva.csv`, `06_episodios.csv` |
+| 07 | `07_exportar_powerbi.py` | Junta los resultados de los tres equipos en tablas para Power BI | pasos 03b a 06 | carpeta `powerbi/` (`pbi_ventanas.csv`, `pbi_error_por_variable.csv`, `pbi_resumen_deteccion.csv`, `pbi_nivel_N.csv` y otras) |
 
 Módulos que usan los scripts (van en la misma carpeta): `reglas_engine.py`, `criticidad.py`, `indice_w.py`.
 
