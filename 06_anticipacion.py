@@ -56,7 +56,10 @@ N_BOOT = 1000
 
 N_MIN_MARCADAS = 30
 
-DETECTOR_PRINCIPAL = 'AE_normales'
+PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
+if PUNTO_PARADA not in ('perdida', 'separacion'):
+    raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
+DETECTOR_PRINCIPAL = 'AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'AE_normales'
 
 PERMITIR_SPLIT_DESVIADO = False
 
@@ -86,6 +89,8 @@ cols_err = [c for c in ('err_AE_normales_sep', 'err_AE_normales')
             if c in err.columns]
 if not cols_err:
     raise SystemExit(f'El paso 04 no trae columnas err_AE_*: {list(err.columns)}')
+if 'error_reconstruccion' in err.columns and not np.allclose(err[f'err_{DETECTOR_PRINCIPAL}'], err.error_reconstruccion):
+    raise SystemExit(f'El paso 04 se corrió con otro punto de parada: córrelo con PUNTO_PARADA={PUNTO_PARADA!r}.')
 
 LLAVES = ['tramo_id', 'ventana_id']
 medias = [f'{v}_media' for v in VARIABLES]

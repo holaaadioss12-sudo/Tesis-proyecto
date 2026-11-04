@@ -42,7 +42,10 @@ CANDIDATOS = {
     'AE_normales_sep': [f'{RUTA_EQ}/autoencoder_W{W}_normales_sep.pt',
                         f'{RUTA_EQ}/CAMBIOS/autoencoder_W{W}_normales_sep.pt'],
 }
-MODELO_PRINCIPAL = 'AE_normales'
+PUNTO_PARADA = _os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
+if PUNTO_PARADA not in ('perdida', 'separacion'):
+    raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
+MODELO_PRINCIPAL = 'AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'AE_normales'
 import os as _os
 MODELOS = {}
 for _n, _rutas in CANDIDATOS.items():
@@ -58,6 +61,7 @@ if MODELO_PRINCIPAL not in MODELOS:
                      'Corre el 03b_autoencoder_entrenamiento.py antes que este.')
 RUTA_MODELO = MODELOS[MODELO_PRINCIPAL]
 print(f'Modelos encontrados: {len(MODELOS)} de {len(CANDIDATOS)}')
+print(f'Punto de parada: {PUNTO_PARADA} -> modelo principal {MODELO_PRINCIPAL}')
 for _n, _r in MODELOS.items():
     print(f'  {_n:<18} {_r}')
 RUTA_NORMALIZADOR = f'{RUTA_EQ}/normalizador_W{W}.npz'

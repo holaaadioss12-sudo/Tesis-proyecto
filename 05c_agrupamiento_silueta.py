@@ -91,6 +91,11 @@ ARCHIVO_NIVEL = f'{RUTA_EQ}/05a_nivel_ventanas.csv'
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
 # FUENTE = 'oficial': el modelo del paso 03b; '03a': un modelo del barrido del 03a
 FUENTE = os.environ.get('FUENTE', 'oficial')
+PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
+if PUNTO_PARADA not in ('perdida', 'separacion'):
+    raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
+AE = 'err_AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'err_AE_normales'
+_SUF = '_sep' if PUNTO_PARADA == 'separacion' else ''
 for _f in [ARCHIVO_LIMPIO, ARCHIVO_CORTE, ARCHIVO_NIVEL] + (
         [ARCHIVO_04G] if FUENTE == '03a' else [ARCHIVO_ERROR]):
     if not os.path.exists(_f):
@@ -128,7 +133,7 @@ if FUENTE == '03a':
         if not os.path.exists(_f):
             raise SystemExit(f'Falta {_f}: corre el 03a con esa red, k y semilla.')
 elif FUENTE == 'oficial':
-    _cands = [salida(f'autoencoder_W{W}_normales.pt'), salida(f'CAMBIOS/autoencoder_W{W}_normales.pt')]
+    _cands = [salida(f'autoencoder_W{W}_normales{_SUF}.pt'), salida(f'CAMBIOS/autoencoder_W{W}_normales{_SUF}.pt')]
     RUTA_MOD = next((r for r in _cands if os.path.exists(r)), None)
     if RUTA_MOD is None:
         raise SystemExit(f'No encontré el modelo del paso 03b en: {_cands}')
@@ -138,7 +143,7 @@ elif FUENTE == 'oficial':
     RED = 'transformer_t' if CONFIG_AE['tipo'] == 'temporal' else 'transformer'
     K = int(CONFIG_AE['latent_dim'])
     RUTA_REF = os.environ.get('MODELO_REFERENCIA', '')     # opcional: el modelo anterior (.pt)
-    print(f"Modelo oficial: {CONFIG_AE['tipo']}, latent_dim = {K} ({RUTA_MOD})")
+    print(f"Modelo oficial: {CONFIG_AE['tipo']}, latent_dim = {K}, punto de parada: {PUNTO_PARADA} ({RUTA_MOD})")
 else:
     raise SystemExit(f"FUENTE tiene que ser 'oficial' o '03a', no {FUENTE!r}.")
 
@@ -349,9 +354,11 @@ if FUENTE == '03a':
     _g = np.load(RUTA_ERR)
     _ref_va, _ref_te, _yo_va, _yo_te = _g['ev_va'], _g['ev_te'], ev_va, ev_te
 else:                     # el paso 04 numera distinto: se comparan los errores ordenados
-    _e5 = pd.read_csv(ARCHIVO_ERROR, usecols=['conjunto', 'err_AE_normales'])
-    _ref_va = np.sort(_e5[_e5.conjunto == 'val'].err_AE_normales.to_numpy())
-    _ref_te = np.sort(_e5[_e5.conjunto == 'test'].err_AE_normales.to_numpy())
+    _e5 = pd.read_csv(ARCHIVO_ERROR, usecols=lambda c: c in ('conjunto', AE, 'error_reconstruccion'))
+    if 'error_reconstruccion' in _e5.columns and not np.allclose(_e5[AE], _e5.error_reconstruccion):
+        raise SystemExit(f'El paso 04 se corrió con otro punto de parada: córrelo con PUNTO_PARADA={PUNTO_PARADA!r}.')
+    _ref_va = np.sort(_e5.loc[_e5.conjunto == 'val', AE].to_numpy())
+    _ref_te = np.sort(_e5.loc[_e5.conjunto == 'test', AE].to_numpy())
     _yo_va, _yo_te = np.sort(ev_va.mean(axis=1)), np.sort(ev_te.mean(axis=1))
     if len(_ref_va) != len(_yo_va) or len(_ref_te) != len(_yo_te):
         raise SystemExit(f'Distinto número de ventanas que el paso 04: val {len(_yo_va)} contra '

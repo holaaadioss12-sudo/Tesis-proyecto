@@ -18,6 +18,6 @@ Detección de anomalías en chancadores con un autoencoder temporal. Los scripts
 
 Módulos que usan los scripts (van en la misma carpeta): `reglas_engine.py`, `criticidad.py`, `indice_w.py`.
 
-Variables de entorno principales: `EQUIPO`; en 03b, `TIPO_AE` (`temporal` o `colapsado`), `LATENT_DIM` (4 por defecto) y `EPOCAS_MAX` (100 por defecto; si se sube, el entrenamiento sigue desde la última época); en 03a, `REDES`, `LATENTES` y `SEMILLAS`; en 05c, `FUENTE` (`oficial` o `03a`) y `MODELO_REFERENCIA`.
+Variables de entorno principales: `EQUIPO`; en 03b, `TIPO_AE` (`temporal` o `colapsado`), `LATENT_DIM` (4 por defecto) y `EPOCAS_MAX` (100 por defecto; si se sube, el entrenamiento sigue desde la última época); en 03a, `REDES`, `LATENTES` y `SEMILLAS`; en 05c, `FUENTE` (`oficial` o `03a`) y `MODELO_REFERENCIA`. En 04, 05a, 05b, 05c y 06, `PUNTO_PARADA` elige el modelo del 03b: `perdida` (menor pérdida, por defecto) o `separacion` (mayor separación); tiene que ser el mismo en todos, y los scripts se detienen si no coincide con el que usó el 04.
 
 La carpeta `anteriores/` guarda los scripts que ya no se corren (el pipeline en un solo archivo, el Random Forest, la Fase B y los experimentos previos del autoencoder).

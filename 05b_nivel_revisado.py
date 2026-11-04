@@ -38,7 +38,10 @@ import criticidad
 SEED = 42
 W = 60
 LLAVES = ['tramo_id', 'ventana_id']
-AE = 'err_AE_normales'
+PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
+if PUNTO_PARADA not in ('perdida', 'separacion'):
+    raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
+AE = 'err_AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'err_AE_normales'
 NIVELES = ['0_normal', '1_leve', '2_media', '3_grave']
 PESO = {c: 3 ** (3 - c) for c in (1, 2, 3)}            # 9 / 3 / 1, como el N actual
 
@@ -161,7 +164,11 @@ print('=' * 72)
 ESCALAS = {'actual': 'nivel_actual', 'presencia': 'nivel_presencia', 'combinado': 'nivel_combinado'}
 hay_error = os.path.exists(ARCHIVO_ERROR)
 if hay_error:
-    _e = pd.read_csv(ARCHIVO_ERROR, usecols=lambda c: c in LLAVES + ['conjunto', AE] or c.startswith('evar_'))
+    _e = pd.read_csv(ARCHIVO_ERROR, usecols=lambda c: c in LLAVES + ['conjunto', AE, 'error_reconstruccion']
+                     or c.startswith('evar_'))
+    if 'error_reconstruccion' in _e.columns and not np.allclose(_e[AE], _e.error_reconstruccion):
+        raise SystemExit(f'El paso 04 se corrió con otro punto de parada: córrelo con PUNTO_PARADA={PUNTO_PARADA!r}.')
+    _e = _e.drop(columns='error_reconstruccion', errors='ignore')
     d = d.merge(_e, on=LLAVES, how='left')
     print(f'Error del autoencoder: {ARCHIVO_ERROR}')
 else:

@@ -82,6 +82,9 @@ for eq in EQUIPOS:
     v = con_clave(v)
     v['estado_reglas'] = np.where(sin_alarma, 'normal', 'anomala')
     v['umbral_ae'] = umbral_ae
+    parada = ('mayor separación' if 'err_AE_normales_sep' in err.columns
+              and np.allclose(err.error_reconstruccion, err.err_AE_normales_sep) else 'menor pérdida')
+    v['punto_parada'] = parada
     v['marcada_ae'] = (v.error_reconstruccion > umbral_ae).astype(int)
 
     n05a = leer(f'{r}/05a_nivel_ventanas.csv')
@@ -121,7 +124,7 @@ for eq in EQUIPOS:
         y = (s.estado_reglas == 'anomala').astype(int)
         en = s.loc[y == 0, 'error_reconstruccion'].median()
         ea = s.loc[y == 1, 'error_reconstruccion'].median()
-        resumen.append({'equipo': eq, 'conjunto': conj,
+        resumen.append({'equipo': eq, 'conjunto': conj, 'punto_parada': parada,
                         'ventanas_normales': int((y == 0).sum()), 'ventanas_anomalas': int(y.sum()),
                         'error_mediano_normal': en, 'error_mediano_anomala': ea,
                         'razon_anomala_normal': ea / en if en else np.nan,

@@ -52,10 +52,12 @@ def puntajes(d):
         ev = d[ev_cols].to_numpy()
         ref = np.median(ev[(d.conjunto == 'val').to_numpy() & d.normal.to_numpy()], axis=0)
         z = ev / np.maximum(ref, 1e-12)              # veces su error típico normal
+        parada = ('mayor separación' if 'err_AE_normales_sep' in d.columns
+                  and np.allclose(ev.mean(axis=1), d['err_AE_normales_sep']) else 'menor pérdida')
         zs = -np.sort(-z, axis=1)
-        p[('menor pérdida', 'estandarizado: promedio')] = z.mean(axis=1)
-        p[('menor pérdida', 'estandarizado: 3 mayores')] = zs[:, :3].mean(axis=1)
-        p[('menor pérdida', 'estandarizado: máximo')] = zs[:, 0]
+        p[(parada, 'estandarizado: promedio')] = z.mean(axis=1)
+        p[(parada, 'estandarizado: 3 mayores')] = zs[:, :3].mean(axis=1)
+        p[(parada, 'estandarizado: máximo')] = zs[:, 0]
     return p
 
 

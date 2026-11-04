@@ -54,7 +54,10 @@ except ImportError:
 SEED = 42
 W = 60
 LLAVES = ['tramo_id', 'ventana_id']
-AE = 'err_AE_normales'          # Checkpoint de pérdida mínima
+PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
+if PUNTO_PARADA not in ('perdida', 'separacion'):
+    raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
+AE = 'err_AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'err_AE_normales'
 PERCENTIL_UMBRAL = 95           # umbral del autoencoder, normales de validación
 
 ESCALAS = {'lineal': {c: 4 - c for c in (1, 2, 3)},
@@ -300,6 +303,8 @@ print('=' * 72)
 err = pd.read_csv(ARCHIVO_ERROR)
 if AE not in err.columns:
     raise SystemExit(f'El archivo del paso 04 no trae {AE}.')
+if 'error_reconstruccion' in err.columns and not np.allclose(err[AE], err.error_reconstruccion):
+    raise SystemExit(f'El paso 04 se corrió con otro punto de parada: córrelo con PUNTO_PARADA={PUNTO_PARADA!r}.')
 d = err[LLAVES + ['conjunto', AE]].merge(ventanas, on=LLAVES, how='inner',
                                          validate='one_to_one')
 d = d.rename(columns={AE: 'error_ae'})
