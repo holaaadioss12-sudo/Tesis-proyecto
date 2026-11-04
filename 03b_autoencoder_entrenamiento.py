@@ -491,7 +491,7 @@ else:
 # 8. RESULTADOS Y COMPARACIÓN CON EL MODELO ANTERIOR
 # =============================================================================
 def evaluar(ruta):
-    modelo.load_state_dict(torch.load(ruta))
+    modelo.load_state_dict(torch.load(ruta, map_location=device))
     modelo.eval()
     ev = error_por_ventana(val_full_loader)
     et = error_por_ventana(test_loader)
