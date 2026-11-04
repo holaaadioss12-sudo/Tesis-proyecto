@@ -108,6 +108,7 @@ for eq in EQUIPOS:
             larga = larga.merge(u_var.rename(columns={'umbral_P95': 'umbral_variable'}),
                                 on='variable', how='left')
             larga['sobre_umbral'] = (larga.error_variable > larga.umbral_variable).astype(int)
+            larga['veces_umbral'] = larga.error_variable / larga.umbral_variable
         por_variable.append(larga)
     u = pd.DataFrame({'equipo': eq, 'variable': ['TOTAL'], 'umbral_P95': [umbral_ae]})
     if u_var is not None:

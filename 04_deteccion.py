@@ -349,6 +349,11 @@ for _i in range(3):
     m[f'var_{_i + 1}'] = np.array(VARIABLES)[_orden[:, _i]]
 m['aporte_var_1_pct'] = (100 * _ev[np.arange(len(m)), _orden[:, 0]] / _ev.sum(axis=1)).round(1)
 m['variables_sobre_umbral'] = [', '.join(np.array(VARIABLES)[s]) for s in (_ev > U_VAR)]
+# variable más alejada de su propio umbral (error / umbral P95 de esa variable)
+_rel = _ev / np.maximum(U_VAR, 1e-12)
+_orden_rel = np.argsort(-_rel, axis=1)
+m['var_sobre_umbral_1'] = np.array(VARIABLES)[_orden_rel[:, 0]]
+m['veces_umbral_var_1'] = _rel[np.arange(len(m)), _orden_rel[:, 0]].round(2)
 pd.DataFrame({'variable': VARIABLES, 'umbral_P95': U_VAR}).to_csv(
     f'{RUTA_EQ}/04_umbral_por_variable.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
 print('Umbral por variable (P95 de las ventanas sin alarma de validación): 04_umbral_por_variable.csv')
@@ -376,26 +381,30 @@ _act = (m[['tramo_id', 'ventana_id']]
         [_rc].fillna(0).to_numpy() > 0)
 _r2v = np.array([[v in _variables_de(r) for v in VARIABLES] for r in _rc], dtype=int)
 _vars_ok = (_act.astype(int) @ _r2v) > 0          # variables que miran las reglas que sonaron
-_top = _orden[:, 0]
-_dist0 = np.bincount(_top[_quietas_val], minlength=len(VARIABLES)) / max(int(_quietas_val.sum()), 1)
+CRITERIOS = {'mayor error': _orden[:, 0], 'mayor error sobre su umbral': _orden_rel[:, 0]}
 _fam = {f: (_act[:, [_rc.index(r) for r in rs if r in _rc]].any(axis=1)
             if any(r in _rc for r in rs) else np.zeros(len(m), bool)) for f, rs in FAMILIAS.items()}
 _filas_at = []
-for _cj in ('val', 'test'):
-    _base = (m.conjunto == _cj).to_numpy() & _act.any(axis=1)
-    _grupos = {'todas las anomalas': _base}
-    for _f in FAMILIAS:
-        _otras = np.column_stack([_fam[g] for g in FAMILIAS if g != _f]).any(axis=1)
-        _grupos[f'solo {_f}'] = _base & _fam[_f] & ~_otras
-    for _g, _s in _grupos.items():
-        if _s.sum() == 0:
-            continue
-        _ok = _vars_ok[_s]
-        _filas_at.append({'conjunto': _cj, 'grupo': _g, 'ventanas': int(_s.sum()),
-                          'acierta_pct': round(100 * _ok[np.arange(_s.sum()), _top[_s]].mean(), 1),
-                          'azar_pct': round(100 * (_ok * _dist0).sum(axis=1).mean(), 1)})
+for _crit, _top in CRITERIOS.items():
+    _dist0 = np.bincount(_top[_quietas_val], minlength=len(VARIABLES)) / max(int(_quietas_val.sum()), 1)
+    for _cj in ('val', 'test'):
+        _base = (m.conjunto == _cj).to_numpy() & _act.any(axis=1)
+        _grupos = {'todas las anomalas': _base}
+        for _f in FAMILIAS:
+            _otras = np.column_stack([_fam[g] for g in FAMILIAS if g != _f]).any(axis=1)
+            _grupos[f'solo {_f}'] = _base & _fam[_f] & ~_otras
+        for _g, _s in _grupos.items():
+            if _s.sum() == 0:
+                continue
+            _ok = _vars_ok[_s]
+            _filas_at.append({'criterio': _crit, 'conjunto': _cj, 'grupo': _g, 'ventanas': int(_s.sum()),
+                              'acierta_pct': round(100 * _ok[np.arange(_s.sum()), _top[_s]].mean(), 1),
+                              'azar_pct': round(100 * (_ok * _dist0).sum(axis=1).mean(), 1)})
 atribucion = pd.DataFrame(_filas_at)
 print(atribucion.to_string(index=False))
+print('mayor error: la variable que más aporta al error de la ventana.')
+print('mayor error sobre su umbral: la variable más alejada de su propio umbral P95; compara')
+print('variables con escalas de error distintas (PEL y las vibraciones tienen errores normales más altos).')
 atribucion.to_csv(f'{RUTA_EQ}/04_atribucion_variables.csv', sep=';', decimal=',', index=False,
                   encoding='utf-8-sig')
 print('acierta_pct: la variable con más error es una de las que mira la regla que sonó.')
