@@ -67,7 +67,7 @@ CUANTILES_EPS = [0.10, 0.25, 0.50, 0.75]
 PCA_VARIANZA, PCA_MAX = 0.80, 20
 MAX_SILUETA = 5000
 TOL_ERROR = 1e-3
-MAX_RUIDO = 0.50                 # DBSCAN/HDBSCAN con más ruido no se eligen
+MAX_RUIDO = 0.20                 # DBSCAN/HDBSCAN con más ruido no se eligen
 UMAP_DIMS = (2, 5, 10)           # UMAP sobre el latente antes de agrupar (McConville et al., 2021)
 UMAP_VECINOS = 20
 BANDA = 'banda_N_empinada_natural'
@@ -554,7 +554,8 @@ print('=' * 72)
 _ok = agrup[(agrup.grupos >= 2) & (agrup.ruido_pct <= 100 * MAX_RUIDO)].dropna(subset=['silueta_val'])
 mejores = _ok.loc[_ok.groupby('representacion').silueta_val.idxmax()]
 print(mejores.to_string(index=False))
-print('\nSilueta: sobre 0,50 hay grupos razonables; 0,25 o menos, no hay grupos claros.')
+print(f'\nSolo se eligen particiones que dejan hasta {MAX_RUIDO:.0%} de las ventanas como ruido.')
+print('Silueta: sobre 0,50 hay grupos razonables; 0,25 o menos, no hay grupos claros.')
 print('silueta_val: medida donde se agrupó (PCA o UMAP). silueta_val_latente: la misma partición')
 print('medida en el latente (PCA); es la que permite comparar PCA con UMAP.')
 print('ARI de nivel: 0 = azar, 1 = los mismos grupos que leve / media / grave.')
