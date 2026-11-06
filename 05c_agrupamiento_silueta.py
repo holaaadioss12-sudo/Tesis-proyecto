@@ -4,7 +4,8 @@
 PASO 05c — AGRUPAMIENTO DEL LATENTE TEMPORAL CON ÍNDICE DE SILUETA
 =============================================================================
 Entrada:  el modelo del paso 03b (FUENTE=oficial) o de 03a_modelos/ (FUENTE=03a), 05a_nivel_ventanas.csv
-Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_umap.png, 05c_prototipos.csv/png
+Salida:   05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_umap.png, 05c_prototipos.csv/png,
+          05c_grupos_ventanas.csv y 05c_eleccion.json (para el paso 05d)
 """
 import os
 import sys
@@ -205,9 +206,13 @@ al_va, al_te = cu_va.sum(axis=1) > 0, cu_te.sum(axis=1) > 0
 print(f'Ventanas: validación {len(X_va):,} | prueba {len(X_te):,}')
 
 
+def conteo_familias(cuenta):
+    return np.column_stack([cuenta[:, [IDS.index(r) for r in rs if r in IDS]].sum(axis=1)
+                            for rs in FAMILIAS.values()])
+
+
 def familia_dominante(cuenta):
-    fam = np.column_stack([cuenta[:, [IDS.index(r) for r in rs if r in IDS]].sum(axis=1)
-                           for rs in FAMILIAS.values()])
+    fam = conteo_familias(cuenta)
     nombres = np.array(list(FAMILIAS))
     return np.where(fam.sum(axis=1) > 0, nombres[fam.argmax(axis=1)], 'sin_alarma')
 
@@ -598,9 +603,13 @@ print('=' * 72)
 _temporales = mejores[mejores.representacion.str.startswith('temporal')]
 if _temporales.empty:
     print('Ningún agrupamiento temporal tiene al menos 2 grupos con poco ruido.')
+    for _f in ('05c_grupos_ventanas.csv', '05c_eleccion.json'):     # que el 05d no lea una corrida vieja
+        if os.path.exists(salida(_f)):
+            os.remove(salida(_f))
 else:
     elegido = _temporales.loc[_temporales.silueta_val_latente.idxmax()]
-    l_va, _ = etiquetas[(elegido.representacion, elegido.metodo)]
+    l_va, l_te = etiquetas[(elegido.representacion, elegido.metodo)]
+    _base = elegido.representacion.split(' + UMAP')[0]
     print(f'{elegido.representacion} · {elegido.metodo} · silueta en el latente '
           f'{elegido.silueta_val_latente} (elegido por la silueta en el latente)')
     ev_m = ev_va[mv]
@@ -629,8 +638,34 @@ else:
     print('\nSi un grupo concentra un tipo de alarma y unas variables, describe un modo de')
     print('comportamiento aunque no coincida con leve / media / grave.')
 
+    # grupo de cada ventana marcada y medoide (la más cercana al centro del grupo en el latente), para el 05d
+    _Xb = ESPACIOS[_base][0]
+    _medoide = np.zeros(len(l_va), dtype=int)
+    for gr in sorted(g for g in set(l_va) if g >= 0):
+        _i = np.where(l_va == gr)[0]
+        _medoide[_i[np.argmin(((_Xb[_i] - _Xb[_i].mean(axis=0)) ** 2).sum(axis=1))]] = 1
+    _partes = []
+    for _conj, _m, _lab, _ts, _b, _n, _tipo, _ev, _cu, _e, _med in [
+            ('val', mv, l_va, ts_va, b_va, n_va, tipo_va, ev_va, cu_va, e_va, _medoide),
+            ('test', mt, l_te, ts_te, b_te, n_te, tipo_te, ev_te, cu_te, e_te, np.zeros(mt.sum(), dtype=int))]:
+        _d = {'conjunto': _conj, 'timestamp_inicio': _ts[_m], 'grupo': _lab, 'nivel': _b[_m], 'N': _n[_m],
+              'tipo_dominante': _tipo[_m], 'error_reconstruccion': _e[_m], 'medoide': _med}
+        _d.update({f'evar_{v}': _ev[_m][:, j] for j, v in enumerate(VARIABLES)})
+        _d.update({f'fam_{f}': c for f, c in zip(FAMILIAS, conteo_familias(_cu[_m]).T)})
+        _partes.append(pd.DataFrame(_d))
+    pd.concat(_partes).to_csv(salida('05c_grupos_ventanas.csv'), sep=';', decimal=',', index=False,
+                              encoding='utf-8-sig')
+    with open(salida('05c_eleccion.json'), 'w', encoding='utf-8') as _f:
+        json.dump({'equipo': EQUIPO, 'punto_parada': PUNTO_PARADA, 'fuente': FUENTE, 'red': RED,
+                   'latent_dim': K, 'representacion': str(elegido.representacion),
+                   'metodo': str(elegido.metodo), 'espacio': str(elegido.espacio),
+                   'grupos': int(elegido.grupos), 'ruido_pct': float(elegido.ruido_pct),
+                   'silueta_val_latente': float(elegido.silueta_val_latente),
+                   'silueta_test_latente': float(elegido.silueta_test_latente),
+                   'umbral': umbral, 'banda': BANDA}, _f, ensure_ascii=False, indent=1)
+    print('Grupo de cada ventana marcada: 05c_grupos_ventanas.csv (lo usa el paso 05d)')
+
     # mapa UMAP 2D de las ventanas marcadas: por grupo y por nivel
-    _base = elegido.representacion.split(' + UMAP')[0]
     if _base in UMAP2D:
         U = UMAP2D[_base]
         fig, ejes = plt.subplots(1, 2, figsize=(13, 5.5))
@@ -714,4 +749,4 @@ if not _temporales.empty:
     print('sensor, y en desviaciones estándar. Gráfico: 05c_prototipos.png')
 
 print(f'\nGuardado: 05c_agrupamiento.csv, 05c_perfil_grupos.csv, 05c_silueta.png, 05c_umap.png, '
-      f'05c_prototipos.csv y 05c_prototipos.png en {RUTA_EQ}')
+      f'05c_prototipos.csv, 05c_prototipos.png, 05c_grupos_ventanas.csv y 05c_eleccion.json en {RUTA_EQ}')
