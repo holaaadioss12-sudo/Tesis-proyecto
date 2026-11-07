@@ -3,7 +3,7 @@
 =============================================================================
 PASO 07 — TABLAS PARA POWER BI (LOS TRES EQUIPOS EN UN SOLO LUGAR)
 =============================================================================
-Entrada:  salidas de los pasos 03b, 04, 05a, 05b, 05c y 06 de cada equipo
+Entrada:  salidas de los pasos 03b, 04, 04c, 04d, 05a, 05b, 05c y 06 de cada equipo
 Salida:   carpeta powerbi/ con un CSV por tema (separador ';' y coma decimal)
 """
 import os
@@ -64,6 +64,7 @@ print('=' * 72)
 
 ventanas, por_variable, umbrales, nivel_n, curvas = [], [], [], [], []
 resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
+tabla_exp, delta_var, etiquetas, deriva = [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -97,6 +98,17 @@ for eq in EQUIPOS:
         c = [x for x in ['N_presencia', 'nivel_presencia', 'nivel_combinado', 'subsistemas', 'alarmas']
              if x in n05b.columns]
         v = v.merge(n05b[LLAVES + c], on=LLAVES, how='left')
+    loc = leer(f'{r}/04c_localizacion_ventanas.csv')
+    if loc is not None:                  # localización y etiqueta componente · nivel (paso 04c)
+        c = [x for x in ['n_sobre_umbral', 'var_delta_1', 'pct_exceso_1', 'var_delta_2', 'var_delta_3',
+                         'componente', 'nivel_texto', 'etiqueta'] if x in loc.columns]
+        v = v.merge(loc[LLAVES + c], on=LLAVES, how='left')
+        if 'etiqueta' in v.columns and v.etiqueta.notna().all():
+            _no = (v.etiqueta == 'no marcada').astype(int)
+            if (_no == v.marcada_ae).any():
+                print(f'  OJO: la etiqueta del 04c no coincide con marcada_ae; ¿el 04c es de otra corrida del 04?')
+    else:
+        print(f'  {eq}: falta 04c_localizacion_ventanas.csv (paso 04c); sin etiqueta componente · nivel.')
     ventanas.append(v)
 
     # --- error por variable, en formato largo ----------------------------
@@ -146,7 +158,9 @@ for eq in EQUIPOS:
     # --- resto de las tablas, con la columna equipo ----------------------
     for lista, archivo in [(curvas, '03b_comparacion_epocas.csv'), (agrup, '05c_agrupamiento.csv'),
                            (perfil, '05c_perfil_grupos.csv'), (proto, '05c_prototipos.csv'),
-                           (anticip, '06_resumen.csv'), (episodios, '06_episodios.csv')]:
+                           (anticip, '06_resumen.csv'), (episodios, '06_episodios.csv'),
+                           (tabla_exp, '04c_tabla_experto.csv'), (delta_var, '04c_delta_variables.csv'),
+                           (etiquetas, '04c_etiquetas_resumen.csv'), (deriva, '04d_mensual.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -158,7 +172,9 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (nivel_n, 'pbi_nivel_N.csv'), (curvas, 'pbi_entrenamiento.csv'),
                       (agrup, 'pbi_agrupamiento.csv'), (perfil, 'pbi_perfil_grupos.csv'),
                       (proto, 'pbi_prototipos.csv'), (anticip, 'pbi_anticipacion.csv'),
-                      (episodios, 'pbi_episodios.csv')]:
+                      (episodios, 'pbi_episodios.csv'), (tabla_exp, 'pbi_tabla_experto.csv'),
+                      (delta_var, 'pbi_delta_variables.csv'), (etiquetas, 'pbi_etiquetas.csv'),
+                      (deriva, 'pbi_deriva_mensual.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)

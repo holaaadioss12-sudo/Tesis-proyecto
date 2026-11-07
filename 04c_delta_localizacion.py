@@ -10,6 +10,7 @@ y consistencia en el tiempo.
 Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv (paso 02),
           05a_nivel_ventanas.csv (opcional: separa por nivel)
 Salida:   04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, 04c_causa_raiz.csv,
+          04c_etiquetas_resumen.csv,
           04c_metricas.csv, 04c_consistencia.csv, 04c_localizacion_ejemplos.png,
           04c_localizacion_ventanas.csv (lo usa el paso 05e)
 Se decide en validación; prueba solo se informa.
@@ -55,6 +56,9 @@ LLAVES = ['tramo_id', 'ventana_id']
 BANDA = 'banda_N_empinada_natural'
 NIVELES = ['1_leve', '2_media', '3_grave']
 TEXTO_NIVEL = {'0_normal': 'sin alarma', '1_leve': 'leve', '2_media': 'media', '3_grave': 'grave'}
+TEXTO_COMP = {'lubricacion': 'lubricación', 'motor': 'motor', 'alimentacion': 'alimentación', 'filtro': 'filtro',
+              'eje_principal': 'eje principal', 'socket_liner': 'socket liner', 'contraeje': 'contraeje',
+              'tanque_aceite': 'tanque de aceite', 'estructura': 'estructura', 'setting': 'setting'}
 FAMILIAS = {
     'lubricacion': ['D', 'A5', 'E'],
     'corriente':   ['A', 'A1', 'A4'],
@@ -305,23 +309,46 @@ print('acertaría eligiendo como en las ventanas normales. ventaja = acierta −
 print('\n' + '=' * 72)
 print('5. TABLA DE CONSULTA PARA EL EXPERTO: VARIABLE -> COMPONENTE -> MODO DE FALLA')
 print('=' * 72)
-filas_t, COMP_VAR = [], {}
+def componente_principal(v):
+    """Componente de las reglas que miran la variable como variable principal."""
+    for papel in ('var', 'a', 'vars', 'var2', 'b'):
+        reglas = [r for r in IDS_REGLAS if r in criticidad.COMPONENTE and
+                  (v in POR_ID[r].get('vars', []) if papel == 'vars' else POR_ID[r].get(papel) == v)]
+        if reglas:
+            c = pd.Series([criticidad.COMPONENTE[r] for r in reglas]).value_counts().index[0]
+            return TEXTO_COMP.get(c, c)
+    return 'sin componente'
+
+
+filas_t, COMP_VAR, COMP_PRINCIPAL = [], {}, {}
 for j, v in enumerate(VARIABLES):
     reglas = [r for r in IDS_REGLAS if r in criticidad.CRITICIDAD and v in variables_de(r)]
     comps = sorted({criticidad.COMPONENTE[r] for r in reglas if r in criticidad.COMPONENTE})
     fallas = list(dict.fromkeys(criticidad.FALLA[r] for r in sorted(reglas, key=criticidad.CRITICIDAD.get)
                                 if r in criticidad.FALLA))
     COMP_VAR[v] = ', '.join(comps) if comps else 'sin regla'
+    COMP_PRINCIPAL[v] = componente_principal(v)
     desc, unidad = DESCRIPCION.get(v, ('', ''))
     filas_t.append({'variable': v, 'descripcion': desc, 'unidad': unidad, 'reglas': ', '.join(reglas),
+                    'componente_principal': COMP_PRINCIPAL[v],
                     'componentes': COMP_VAR[v], 'modos_de_falla': ' | '.join(fallas),
                     'criticidad_mas_alta': min((criticidad.CRITICIDAD[r] for r in reglas), default=np.nan),
                     'umbral_P95_error': ref[j], 'confirmado_por_experto': '', 'comentario_experto': ''})
 tabla = pd.DataFrame(filas_t)
 guardar(tabla, '04c_tabla_experto.csv')
-print(tabla[['variable', 'componentes', 'reglas']].to_string(index=False))
-print('Columnas confirmado_por_experto y comentario_experto vacías: para que la planta la corrobore.')
+print(tabla[['variable', 'componente_principal', 'componentes', 'reglas']].to_string(index=False))
+print('componente_principal: el de las reglas que miran la variable como variable principal; es el')
+print('que lleva la etiqueta de cada ventana. Columnas confirmado_por_experto y comentario_experto vacías:')
+print('para que la planta la corrobore.')
 m['componentes_1'] = [COMP_VAR.get(v, '') if v else '' for v in m.var_delta_1]
+
+# etiqueta de dos ejes de cada ventana: componente (variable) · nivel
+_nivel_txt = pd.Series(nivel).map(TEXTO_NIVEL).fillna('sin nivel').to_numpy()
+m['componente'] = [COMP_PRINCIPAL.get(v, '') if v else '' for v in m.var_delta_1]
+m['nivel_texto'] = _nivel_txt
+m['etiqueta'] = np.where(~marcada, 'no marcada',
+                         np.where(m.var_delta_1 != '', m.componente + ' (' + m.var_delta_1 + ') · ' + _nivel_txt,
+                                  'sin variable sobre su umbral · ' + _nivel_txt))
 
 
 # =============================================================================
@@ -351,6 +378,28 @@ for gn in causa.grupo.unique():
         print(f'Prueba · {gn}: ' + '; '.join(f'{r.variable} {r.pct:.0f} % ({r.componentes})'
                                              for r in t.itertuples()))
 print('"marcadas sin alarma": el modelo las marca y ninguna regla sonó; posible aviso temprano o falsa alarma.')
+
+# etiqueta componente · nivel de las ventanas marcadas
+filas_e = []
+for cj, c in [('val', va), ('test', te)]:
+    s = c & marcada
+    if not s.any():
+        continue
+    t = pd.crosstab(m.componente[s], m.nivel_texto[s])
+    for comp, fila in t.iterrows():
+        for nv, k in fila.items():
+            if k:
+                filas_e.append({'conjunto': cj, 'componente': comp or 'sin variable sobre su umbral', 'nivel': nv,
+                                'ventanas': int(k), 'pct_de_marcadas': round(100 * k / s.sum(), 1)})
+etiquetas = pd.DataFrame(filas_e, columns=['conjunto', 'componente', 'nivel', 'ventanas', 'pct_de_marcadas'])
+guardar(etiquetas, '04c_etiquetas_resumen.csv')
+_t = etiquetas[etiquetas.conjunto == 'test']
+if len(_t):
+    _orden = [n for n in ['sin alarma', 'leve', 'media', 'grave', 'sin nivel'] if n in set(_t.nivel)]
+    _p = _t.pivot_table(index='componente', columns='nivel', values='pct_de_marcadas', aggfunc='sum',
+                        fill_value=0)[_orden]
+    print('\nEtiqueta componente · nivel de las ventanas marcadas de prueba (% de las marcadas):')
+    print(_p.assign(total=_p.sum(axis=1)).sort_values('total', ascending=False).round(1).to_string())
 
 
 # =============================================================================
@@ -484,8 +533,10 @@ for j, v in enumerate(VARIABLES):
 cols = (LLAVES + ['timestamp_inicio', 'conjunto', 'nivel', 'familia_dominante', 'anomala', 'error_reconstruccion',
                   'marcada', 'n_sobre_umbral']
         + [f'{p}_{k}' for k in range(1, M_SIG + 1) for p in ('var_delta', 'delta', 'pct_exceso')]
-        + ['componentes_1', 'punto_parada'] + [f'delta_{v}' for v in VARIABLES])
+        + ['componentes_1', 'componente', 'nivel_texto', 'etiqueta', 'punto_parada']
+        + [f'delta_{v}' for v in VARIABLES])
 guardar(m[cols], '04c_localizacion_ventanas.csv')
 print(f'\nGuardado en {RUTA_EQ}: 04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, '
-      f'04c_causa_raiz.csv, 04c_metricas.csv, 04c_consistencia.csv, 04c_localizacion_ejemplos.png, '
+      f'04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_consistencia.csv, '
+      f'04c_localizacion_ejemplos.png, '
       f'04c_localizacion_ventanas.csv')
