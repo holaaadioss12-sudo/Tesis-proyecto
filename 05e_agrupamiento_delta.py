@@ -44,7 +44,7 @@ except ImportError:
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import (adjusted_rand_score, normalized_mutual_info_score, silhouette_score,
-                             roc_auc_score, precision_recall_curve)
+                             roc_auc_score, roc_curve)
 
 
 # =============================================================================
@@ -275,16 +275,16 @@ print(pd.DataFrame(filas_k).to_string(index=False))
 print(f"k elegido por AUC en validación: {mejor['k']}")
 
 
-def umbral_optimo(y, s):
-    p, r, u = precision_recall_curve(y, s)
-    f1 = 2 * p[:-1] * r[:-1] / np.maximum(p[:-1] + r[:-1], 1e-12)
-    return float(u[int(np.nanargmax(f1))])
+def umbral_youden(y, s):
+    fpr, tpr, u = roc_curve(y, s)
+    return float(u[int(np.argmax(tpr - fpr))])       # máximo de sensibilidad + especificidad
 
 
 def prf(y, pred):
     tp, fp, fn = int((y & pred).sum()), int((~y & pred).sum()), int((y & ~pred).sum())
+    tn = int((~y & ~pred).sum())
     p, r = tp / max(tp + fp, 1), tp / max(tp + fn, 1)
-    return p, r, 2 * p * r / max(p + r, 1e-12)
+    return p, r, 2 * p * r / max(p + r, 1e-12), tn / max(tn + fp, 1)
 
 
 umbral_total = float(np.percentile(ERR[va & ~anom], PERCENTIL))
@@ -301,14 +301,17 @@ for nombre, sv, st, u_fijo, desc in DET:
             'umbral_fijo': desc}
     if u_fijo is not None:
         fila['f1_test_umbral_fijo'] = prf(y_t, st > u_fijo)[2]
-    u = umbral_optimo(y_v, sv)
-    p, r, f1 = prf(y_t, st >= u)
-    fila.update({'umbral_optimo_val': u, 'precision_test': p, 'recall_test': r, 'f1_test': f1})
+    u = umbral_youden(y_v, sv)
+    p, r, f1, esp = prf(y_t, st >= u)
+    fila.update({'umbral_youden_val': u, 'precision_test': p, 'recall_test': r, 'especificidad_test': esp,
+                 'f1_test': f1})
     filas_d.append(fila)
 det = pd.DataFrame(filas_d).round(3)
 guardar(det, '05e_deteccion.csv')
 print(det.to_string(index=False))
-print('\nauc_test y f1_test son de prueba; el umbral óptimo se fija en validación. El agrupamiento')
+print('\nauc_test y f1_test son de prueba. El umbral se fija en validación con el máximo de sensibilidad +')
+print('especificidad (Youden): con el máximo de F1 se marcaría casi todo, porque las anómalas son mayoría.')
+print('El agrupamiento')
 print('usa las etiquetas de validación para saber qué grupos son anómalos (su AUC de validación es')
 print('optimista); el error total y el máximo por variable no usan etiquetas.')
 

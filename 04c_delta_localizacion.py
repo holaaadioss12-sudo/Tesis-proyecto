@@ -213,6 +213,9 @@ for cj in ('val', 'test'):
         continue
     print(f'\n{"Validación" if cj == "val" else "Prueba"}: variables con más % del Δ por grupo')
     for gn, s in t.groupby('grupo', sort=False):
+        if s.delta.sum() <= 0:
+            print(f'  {gn:<20} ({s.ventanas.iloc[0]:>5,}): Δ total negativo, tiene menos error que las normales')
+            continue
         top = s.sort_values('delta', ascending=False).head(3)
         print(f'  {gn:<20} ({s.ventanas.iloc[0]:>5,}): ' + ', '.join(
             f'{r.variable} {r.pct_delta:.0f} %' for r in top.itertuples()))
