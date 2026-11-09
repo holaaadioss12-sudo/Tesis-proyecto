@@ -64,7 +64,7 @@ print('=' * 72)
 
 ventanas, por_variable, umbrales, nivel_n, curvas = [], [], [], [], []
 resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
-tabla_exp, delta_var, etiquetas, deriva = [], [], [], []
+tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -160,7 +160,8 @@ for eq in EQUIPOS:
                            (perfil, '05c_perfil_grupos.csv'), (proto, '05c_prototipos.csv'),
                            (anticip, '06_resumen.csv'), (episodios, '06_episodios.csv'),
                            (tabla_exp, '04c_tabla_experto.csv'), (delta_var, '04c_delta_variables.csv'),
-                           (etiquetas, '04c_etiquetas_resumen.csv'), (deriva, '04d_mensual.csv')]:
+                           (etiquetas, '04c_etiquetas_resumen.csv'), (deriva, '04d_mensual.csv'),
+                           (det_nivel, '04c_deteccion_nivel.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -174,7 +175,7 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (proto, 'pbi_prototipos.csv'), (anticip, 'pbi_anticipacion.csv'),
                       (episodios, 'pbi_episodios.csv'), (tabla_exp, 'pbi_tabla_experto.csv'),
                       (delta_var, 'pbi_delta_variables.csv'), (etiquetas, 'pbi_etiquetas.csv'),
-                      (deriva, 'pbi_deriva_mensual.csv')]:
+                      (deriva, 'pbi_deriva_mensual.csv'), (det_nivel, 'pbi_deteccion_nivel.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)

@@ -11,7 +11,7 @@ Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60
           05a_nivel_ventanas.csv (opcional: separa por nivel)
 Salida:   04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, 04c_causa_raiz.csv,
           04c_etiquetas_resumen.csv,
-          04c_metricas.csv, 04c_consistencia.csv, 04c_localizacion_ejemplos.png,
+          04c_metricas.csv, 04c_deteccion_nivel.csv, 04c_consistencia.csv, 04c_localizacion_ejemplos.png,
           04c_localizacion_ventanas.csv (lo usa el paso 05e)
 Se decide en validación; prueba solo se informa.
 """
@@ -467,6 +467,20 @@ for cj, c in [('val', va), ('test', te)]:
 met = pd.DataFrame(filas_m).round(3)
 guardar(met, '04c_metricas.csv')
 print(met.to_string(index=False))
+
+# detección por nivel
+if HAY_NIVEL:
+    filas_n = []
+    for cj, c in [('val', va), ('test', te)]:
+        for nv, g in [('sin alarma', c & normal)] + [(TEXTO_NIVEL[n], c & (nivel == n)) for n in NIVELES]:
+            filas_n.append({'conjunto': cj, 'nivel': nv, 'ventanas': int(g.sum()),
+                            'marcadas': int((g & marcada).sum()),
+                            'pct_marcadas': round(100 * (g & marcada).sum() / max(g.sum(), 1), 1)})
+    det_nivel = pd.DataFrame(filas_n)
+    guardar(det_nivel, '04c_deteccion_nivel.csv')
+    print('\n% de ventanas marcadas por nivel (sin alarma: falsas alarmas; leve, media y grave: recall del nivel):')
+    print(det_nivel.pivot(index='nivel', columns='conjunto', values='pct_marcadas')
+          .reindex(['sin alarma', 'leve', 'media', 'grave'])[['val', 'test']].to_string())
 print('El paper obtiene F1 0,56 contra etiquetas automáticas hechas con umbrales de expertos, que es')
 print('lo mismo que son nuestras reglas. Aquí el umbral es el P95 de las normales de validación.')
 
@@ -537,6 +551,7 @@ cols = (LLAVES + ['timestamp_inicio', 'conjunto', 'nivel', 'familia_dominante', 
         + [f'delta_{v}' for v in VARIABLES])
 guardar(m[cols], '04c_localizacion_ventanas.csv')
 print(f'\nGuardado en {RUTA_EQ}: 04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, '
-      f'04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_consistencia.csv, '
+      f'04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_deteccion_nivel.csv, '
+      f'04c_consistencia.csv, '
       f'04c_localizacion_ejemplos.png, '
       f'04c_localizacion_ventanas.csv')
