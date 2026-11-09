@@ -3,7 +3,7 @@
 =============================================================================
 PASO 07 — TABLAS PARA POWER BI (LOS TRES EQUIPOS EN UN SOLO LUGAR)
 =============================================================================
-Entrada:  salidas de los pasos 03b, 04, 04c, 04d, 05a, 05b, 05c y 06 de cada equipo
+Entrada:  salidas de los pasos 03b, 04, 04c, 04d, 05a, 05b, 05c, 06 y 06b de cada equipo
 Salida:   carpeta powerbi/ con un CSV por tema (separador ';' y coma decimal)
 """
 import os
@@ -65,6 +65,7 @@ print('=' * 72)
 ventanas, por_variable, umbrales, nivel_n, curvas = [], [], [], [], []
 resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
 tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
+pron_met, pron_aviso, pron_ven = [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -161,7 +162,8 @@ for eq in EQUIPOS:
                            (anticip, '06_resumen.csv'), (episodios, '06_episodios.csv'),
                            (tabla_exp, '04c_tabla_experto.csv'), (delta_var, '04c_delta_variables.csv'),
                            (etiquetas, '04c_etiquetas_resumen.csv'), (deriva, '04d_mensual.csv'),
-                           (det_nivel, '04c_deteccion_nivel.csv')]:
+                           (det_nivel, '04c_deteccion_nivel.csv'), (pron_met, '06b_pronostico_metricas.csv'),
+                           (pron_aviso, '06b_pronostico_aviso.csv'), (pron_ven, '06b_pronostico_ventanas.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -175,7 +177,9 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (proto, 'pbi_prototipos.csv'), (anticip, 'pbi_anticipacion.csv'),
                       (episodios, 'pbi_episodios.csv'), (tabla_exp, 'pbi_tabla_experto.csv'),
                       (delta_var, 'pbi_delta_variables.csv'), (etiquetas, 'pbi_etiquetas.csv'),
-                      (deriva, 'pbi_deriva_mensual.csv'), (det_nivel, 'pbi_deteccion_nivel.csv')]:
+                      (deriva, 'pbi_deriva_mensual.csv'), (det_nivel, 'pbi_deteccion_nivel.csv'),
+                      (pron_met, 'pbi_pronostico_metricas.csv'), (pron_aviso, 'pbi_pronostico_aviso.csv'),
+                      (pron_ven, 'pbi_pronostico_ventanas.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)
