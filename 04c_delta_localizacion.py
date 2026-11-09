@@ -7,11 +7,11 @@ Lo pedido en la reunión del 6 de noviembre, siguiendo a Holly et al. (2022):
 delta del error de cada variable entre ventanas anómalas y normales, variables
 que explican cada ventana marcada, tabla de consulta para el experto, métricas
 y consistencia en el tiempo.
-Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv (paso 02),
-          05a_nivel_ventanas.csv (opcional: separa por nivel)
-Salida:   04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, 04c_causa_raiz.csv,
-          04c_etiquetas_resumen.csv,
-          04c_metricas.csv, 04c_deteccion_nivel.csv, 04c_consistencia.csv, 04c_localizacion_ejemplos.png,
+Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv y
+          {EQUIPO}_features_W60.csv (paso 02), 05a_nivel_ventanas.csv (opcional: separa por nivel)
+Salida:   04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_ae_vs_z.csv, 04c_tabla_experto.csv,
+          04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_deteccion_nivel.csv,
+          04c_consistencia.csv, 04c_localizacion_ejemplos.png,
           04c_localizacion_ventanas.csv (lo usa el paso 05e)
 Se decide en validación; prueba solo se informa.
 """
@@ -92,6 +92,7 @@ AE = 'err_AE_normales_sep' if PUNTO_PARADA == 'separacion' else 'err_AE_normales
 ARCHIVO_ERROR = f'{RUTA_EQ}/{EQUIPO}_error_reconstruccion_W{W}.csv'
 ARCHIVO_VENTANAS = f'{RUTA_EQ}/{EQUIPO}_ventanas_W{W}.csv'
 ARCHIVO_NIVEL = f'{RUTA_EQ}/05a_nivel_ventanas.csv'
+ARCHIVO_FEATURES = f'{RUTA_EQ}/{EQUIPO}_features_W{W}.csv'
 for _f in [ARCHIVO_ERROR, ARCHIVO_VENTANAS]:
     if not os.path.exists(_f):
         raise SystemExit(f'Falta {_f}. ¿Corriste los pasos 02 y 04?')
@@ -135,6 +136,17 @@ else:
     nivel = np.full(len(m), None, dtype=object)
     print('Sin 05a_nivel_ventanas.csv: se omite la separación por nivel (corre el 05a para tenerla).')
 
+MEDIAS = [f'{v}_media' for v in VARIABLES]
+HAY_Z = os.path.exists(ARCHIVO_FEATURES)
+if HAY_Z:
+    _f = pd.read_csv(ARCHIVO_FEATURES, usecols=lambda c: c in LLAVES + MEDIAS).drop_duplicates(LLAVES)
+    HAY_Z = all(c in _f.columns for c in MEDIAS)
+    if HAY_Z:
+        m = m.drop(columns=[c for c in MEDIAS if c in m.columns]).merge(_f, on=LLAVES, how='left',
+                                                                         validate='one_to_one')
+if not HAY_Z:
+    print('Sin las medias del paso 02: se omite la localización sin autoencoder (z de las medias).')
+
 EV = m[EVAR].to_numpy(dtype=float)                 # error de cada variable (ecuación 9 del paper)
 ERR = m.error_reconstruccion.to_numpy(dtype=float)  # error total (ecuación 7)
 if not np.allclose(EV.mean(axis=1), ERR, rtol=1e-3, atol=1e-7):
@@ -155,6 +167,11 @@ ref = np.percentile(EV[va & normal], PERCENTIL, axis=0)         # umbral P95 de 
 umbral = float(np.percentile(ERR[va & normal], PERCENTIL))       # umbral P95 del error total
 marcada = ERR > umbral
 D = EV - ref                                                     # exceso de cada variable sobre su umbral
+if HAY_Z:                                                        # línea base sin autoencoder
+    _med = m[MEDIAS].to_numpy(dtype=float)
+    _mu, _sd = np.nanmean(_med[va & normal], axis=0), np.nanstd(_med[va & normal], axis=0, ddof=1)
+    Z = np.nan_to_num(np.abs((_med - _mu) / np.where(_sd > 0, _sd, 1.0)), nan=0.0)
+    ref_z = np.percentile(Z[va & normal], PERCENTIL, axis=0)
 print(f'Ventanas: validación {va.sum():,} | prueba {te.sum():,} | variables: {len(VARIABLES)}')
 print(f'Umbral P{PERCENTIL} del error total (ventanas sin alarma de validación): {umbral:.5f}')
 print(f'Marcadas por el autoencoder: validación {(va & marcada).sum():,} | prueba {(te & marcada).sum():,}')
@@ -274,13 +291,17 @@ print('en vez del error bruto, para que una variable con error normal alto no ga
 # 4. ¿LOCALIZA BIEN? LA VARIABLE ELEGIDA CONTRA LA REGLA QUE SONÓ
 # =============================================================================
 print('\n' + '=' * 72)
-print('4. ¿LA VARIABLE ELEGIDA ES LA DE LA REGLA QUE SONÓ? (tres criterios)')
+print('4. ¿LA VARIABLE ELEGIDA ES LA DE LA REGLA QUE SONÓ? (con y sin autoencoder)')
 print('=' * 72)
 R2V = np.array([[v in variables_de(r) for v in VARIABLES] for r in RC], dtype=int)
 VARS_OK = (ACT.astype(int) @ R2V) > 0
 CRITERIOS = {'mayor error (como el paper)': np.argmax(EV, axis=1),
              'mayor error sobre su umbral': np.argmax(EV / np.maximum(ref, 1e-12), axis=1),
              'mayor delta (exceso sobre su umbral)': np.argmax(D, axis=1)}
+CON_AE = set(CRITERIOS)
+if HAY_Z:
+    CRITERIOS['mayor z de la media (sin autoencoder)'] = np.argmax(Z, axis=1)
+    CRITERIOS['mayor z sobre su P95 (sin autoencoder)'] = np.argmax(Z - ref_z, axis=1)
 filas_a = []
 for crit, top in CRITERIOS.items():
     dist0 = np.bincount(top[va & normal], minlength=len(VARIABLES)) / max(int((va & normal).sum()), 1)
@@ -298,9 +319,55 @@ guardar(atr, '04c_atribucion.csv')
 print(atr.to_string(index=False))
 _v = atr[(atr.conjunto == 'val') & (atr.grupo == 'todas las anómalas')]
 if len(_v):
-    print(f'\nMás ventaja sobre el azar en validación: {_v.loc[_v.ventaja.idxmax(), "criterio"]}')
+    _ae = _v[_v.criterio.isin(CON_AE)]
+    print(f'\nMás ventaja sobre el azar en validación: {_ae.loc[_ae.ventaja.idxmax(), "criterio"]}')
 print('acierta_pct: la variable elegida es una de las que mira la regla que sonó. azar_pct: lo que')
 print('acertaría eligiendo como en las ventanas normales. ventaja = acierta − azar.')
+
+# ¿el autoencoder localiza mejor que el z de las medias?
+if HAY_Z and len(_v):
+    DIST0 = {c: np.bincount(t[va & normal], minlength=len(VARIABLES)) / max(int((va & normal).sum()), 1)
+             for c, t in CRITERIOS.items()}
+    _bloque = m.tramo_id.to_numpy().astype(np.int64) * 100000 + m.ventana_id.to_numpy() // 36
+    _rng = np.random.default_rng(42)
+
+    def ventaja_ventanas(c, idx):
+        ok = VARS_OK[idx]
+        return 100 * (ok[np.arange(len(idx)), CRITERIOS[c][idx]] - (ok * DIST0[c]).sum(axis=1))
+
+    _ae, _z = _v[_v.criterio.isin(CON_AE)], _v[~_v.criterio.isin(CON_AE)]
+    MEJOR_AE, MEJOR_Z = _ae.loc[_ae.ventaja.idxmax(), 'criterio'], _z.loc[_z.ventaja.idxmax(), 'criterio']
+    print(f'\n¿EL AUTOENCODER LOCALIZA MEJOR QUE EL z DE LAS MEDIAS? (elegidos en validación)')
+    print(f'  con autoencoder: {MEJOR_AE} | sin autoencoder: {MEJOR_Z}')
+    filas_z = []
+    for cj, c in [('val', va), ('test', te)]:
+        for gn, s in [('todas las anómalas', c & anomala), ('marcadas por el AE', c & anomala & marcada)]:
+            idx = np.flatnonzero(s)
+            if len(idx) < MIN_VENTANAS:
+                continue
+            dif = ventaja_ventanas(MEJOR_AE, idx) - ventaja_ventanas(MEJOR_Z, idx)
+            grupos = pd.Series(np.arange(len(idx))).groupby(_bloque[idx]).indices
+            claves = np.array(list(grupos))
+            vals = [dif[np.concatenate([grupos[k] for k in _rng.choice(claves, len(claves))])].mean()
+                    for _ in range(1000)]
+            lo, hi = np.percentile(vals, [2.5, 97.5])
+            filas_z.append({'conjunto': cj, 'grupo': gn, 'ventanas': len(idx), 'con_autoencoder': MEJOR_AE,
+                            'sin_autoencoder': MEJOR_Z, 'dif_ventaja': round(dif.mean(), 1),
+                            'ic_inf': round(lo, 1), 'ic_sup': round(hi, 1)})
+    ae_vs_z = pd.DataFrame(filas_z)
+    guardar(ae_vs_z, '04c_ae_vs_z.csv')
+    print(ae_vs_z.drop(columns=['con_autoencoder', 'sin_autoencoder']).to_string(index=False))
+    _r = ae_vs_z[(ae_vs_z.conjunto == 'val') & (ae_vs_z.grupo == 'todas las anómalas')]
+    if len(_r):
+        _r = _r.iloc[0]
+        if _r.ic_inf > 0:
+            print('En validación el autoencoder localiza mejor que el z de las medias: ese es su aporte.')
+        elif _r.ic_sup < 0:
+            print('OJO: en validación el z de las medias localiza mejor que el autoencoder.')
+        else:
+            print('En validación no hay diferencia clara entre localizar con o sin autoencoder.')
+    print('dif_ventaja: ventaja con autoencoder − ventaja sin autoencoder, en puntos; IC 95 % remuestreando')
+    print('bloques de 6 h. Prueba solo se informa.')
 
 
 # =============================================================================
@@ -550,7 +617,7 @@ cols = (LLAVES + ['timestamp_inicio', 'conjunto', 'nivel', 'familia_dominante', 
         + ['componentes_1', 'componente', 'nivel_texto', 'etiqueta', 'punto_parada']
         + [f'delta_{v}' for v in VARIABLES])
 guardar(m[cols], '04c_localizacion_ventanas.csv')
-print(f'\nGuardado en {RUTA_EQ}: 04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_tabla_experto.csv, '
+print(f'\nGuardado en {RUTA_EQ}: 04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_ae_vs_z.csv, 04c_tabla_experto.csv, '
       f'04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_deteccion_nivel.csv, '
       f'04c_consistencia.csv, '
       f'04c_localizacion_ejemplos.png, '

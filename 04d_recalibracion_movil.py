@@ -9,7 +9,7 @@ atrás, no usa nada de la ventana ni del futuro). Se compara con el puntaje fijo
 del paso 04, para el autoencoder y para la línea base z_medias del paso 06.
 Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv y
           {EQUIPO}_features_W60.csv (paso 02)
-Salida:   04d_recalibracion.csv, 04d_comparaciones.csv, 04d_mensual.csv,
+Salida:   04d_recalibracion.csv, 04d_comparaciones.csv, 04d_mensual.csv, 04d_variables_mensual.csv,
           04d_puntaje_ventanas.csv, 04d_deriva.png
 N y la variante se eligen en validación; prueba solo se informa.
 """
@@ -52,6 +52,8 @@ MIN_MES = 20                     # ventanas mínimas por clase para el AUC de un
 LLAVES = ['tramo_id', 'ventana_id']
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
+UNIDAD = {'CM': '%', 'PI': '%', 'PDF': 'kPa', 'PEL': 'kPa', **{v: '°C' for v in ['T7', 'T8', 'T9', 'T1', 'T2', 'T5']},
+          **{v: 'mm/s' for v in ['V1', 'V2', 'V3', 'V4']}}
 
 PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
 if PUNTO_PARADA not in ('perdida', 'separacion'):
@@ -243,6 +245,36 @@ guardar(mensual.round(4), '04d_mensual.csv')
 print(mensual.round(3).to_string(index=False))
 print(f'Con el umbral fijo, una operación estable deja ~5 % de las ventanas sin alarma marcadas cada mes.')
 
+# cambio de cada variable en las ventanas sin alarma, mes a mes
+if 'z_medias' in DETECTORES:
+    _ref = (d.conjunto == 'val').to_numpy() & quieta
+    _mu, _sd = d.loc[_ref, medias].median(), d.loc[_ref, medias].std().replace(0, 1.0)
+    filas_v = []
+    for me in sorted(set(mes)):
+        q = (mes == me) & quieta
+        if q.sum() < MIN_MES:
+            continue
+        med = d.loc[q, medias].median()
+        for c in medias:
+            filas_v.append({'mes': me, 'variable': c[:-6], 'unidad': UNIDAD.get(c[:-6], ''),
+                            'ventanas_sin_alarma': int(q.sum()), 'mediana': med[c],
+                            'mediana_validacion': _mu[c], 'cambio_desv': (med[c] - _mu[c]) / _sd[c]})
+    var_mes = pd.DataFrame(filas_v)
+    guardar(var_mes.round(4), '04d_variables_mensual.csv')
+    if len(var_mes):
+        print('\nCambio de cada variable en las ventanas sin alarma (desviaciones respecto de la mediana de '
+              'validación):')
+        _piv = var_mes.pivot(index='mes', columns='variable', values='cambio_desv')[[c[:-6] for c in medias]]
+        print(_piv.round(1).to_string())
+        print('Lo que más se movió cada mes (|cambio| de 1 desviación o más):')
+        for me, r in _piv.iterrows():
+            top = r[r.abs() >= 1].abs().sort_values(ascending=False).head(3).index
+            if len(top):
+                t = var_mes[var_mes.mes == me].set_index('variable')
+                print(f'  {me}: ' + '; '.join(
+                    f'{v} {t.loc[v, "cambio_desv"]:+.1f} desv. (mediana {t.loc[v, "mediana"]:.1f} '
+                    f'{t.loc[v, "unidad"]}, validación {t.loc[v, "mediana_validacion"]:.1f})' for v in top))
+
 
 # =============================================================================
 # 5. FIGURA Y PUNTAJE POR VENTANA
@@ -295,4 +327,4 @@ print('Si el AUC sube y las marcadas sin alarma vuelven cerca de 5 %, el problem
 print('propuesta es recalibrar el umbral con el nivel normal reciente. Si no cambia, la diferencia')
 print('del equipo no es deriva y tiene sentido buscar hiperparámetros.')
 print(f'\nGuardado en {RUTA_EQ}: 04d_recalibracion.csv, 04d_comparaciones.csv, 04d_mensual.csv, '
-      f'04d_puntaje_ventanas.csv, 04d_deriva.png')
+      f'04d_variables_mensual.csv, 04d_puntaje_ventanas.csv, 04d_deriva.png')
