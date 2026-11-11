@@ -656,13 +656,15 @@ print('1 = el umbral P95 de esa variable en las ventanas normales de validación
 print('recién en el inicio, el error acompaña la anomalía; si pasa antes, la anticipa.')
 
 # figura: un episodio de validación, como la figura 7 del paper
-_ini = [(idx, p) for idx, p in inicios('val') if p >= ANTES and len(idx) - p > DESPUES]
+_todos = inicios('val')
+_ini = [(idx, p) for idx, p in _todos if len(idx) - p > 6]       # al menos 1 h después del inicio
 if _ini:
-    _med = np.median([RATIO_TOT[i[q]] for i, q in _ini])          # inicio típico: error cercano a la mediana
+    _med = np.median([RATIO_TOT[i[q]] for i, q in _todos])        # mediana de todos los inicios
     idx, p = min(_ini, key=lambda ip: (abs(np.log(max(RATIO_TOT[ip[0][ip[1]]], 1e-6) / max(_med, 1e-6))),
-                                       -(~anomala[ip[0][ip[1] - ANTES:ip[1]]]).sum()))
-    sel = idx[p - ANTES:p + DESPUES + 1]
-    horas = (np.arange(len(sel)) - ANTES) / 6
+                                       -min(ip[1], ANTES) - min(len(ip[0]) - ip[1] - 1, DESPUES)))
+    a0, a1 = max(p - ANTES, 0), min(p + DESPUES + 1, len(idx))
+    sel = idx[a0:a1]
+    horas = (np.arange(a0, a1) - p) / 6
     colores = ['#52514e', '#2a78d6', '#eb6834', '#1baf7a', '#eda100']
     fig, ejes = plt.subplots(len(SERIES), 1, figsize=(11, 2.1 * len(SERIES) + 0.8), sharex=True)
     for ax, (nom, r), col in zip(ejes, SERIES, colores):
