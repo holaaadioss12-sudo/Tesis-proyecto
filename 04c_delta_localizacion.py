@@ -658,7 +658,9 @@ print('recién en el inicio, el error acompaña la anomalía; si pasa antes, la 
 # figura: un episodio de validación, como la figura 7 del paper
 _ini = [(idx, p) for idx, p in inicios('val') if p >= ANTES and len(idx) - p > DESPUES]
 if _ini:
-    idx, p = max(_ini, key=lambda ip: (~anomala[ip[0][ip[1] - ANTES:ip[1]]]).sum())
+    _med = np.median([RATIO_TOT[i[q]] for i, q in _ini])          # inicio típico: error cercano a la mediana
+    idx, p = min(_ini, key=lambda ip: (abs(np.log(max(RATIO_TOT[ip[0][ip[1]]], 1e-6) / max(_med, 1e-6))),
+                                       -(~anomala[ip[0][ip[1] - ANTES:ip[1]]]).sum()))
     sel = idx[p - ANTES:p + DESPUES + 1]
     horas = (np.arange(len(sel)) - ANTES) / 6
     colores = ['#52514e', '#2a78d6', '#eb6834', '#1baf7a', '#eda100']
@@ -684,12 +686,13 @@ if _ini:
     ejes[0].legend(fontsize=8, frameon=False, loc='upper left')
     ejes[-1].set_xlabel(f'Horas desde el inicio de la ventana {EVENTO}')
     fecha = pd.Timestamp(m.timestamp_inicio.iloc[idx[p]]).strftime('%Y-%m-%d %H:%M')
-    fig.suptitle(f'{EQUIPO}: error de reconstrucción en el tiempo, inicio de {EVENTO} del {fecha} (validación). '
+    fig.suptitle(f'{EQUIPO}: error de reconstrucción en el tiempo, inicio típico de {EVENTO} ({fecha}, validación). '
                  'Línea punteada: umbral P95', x=0.01, ha='left', fontsize=11)
     fig.tight_layout()
     fig.savefig(salida('04c_error_en_el_tiempo.png'), dpi=150)
     plt.close(fig)
-    print(f'\nEjemplo graficado: inicio de {EVENTO} del {fecha} (validación).')
+    print(f'\nEjemplo graficado: inicio de {EVENTO} del {fecha} (validación), elegido como típico: su error total en el '
+          f'inicio ({RATIO_TOT[idx[p]]:.2f} veces el umbral) es el más cercano a la mediana de los inicios ({_med:.2f}).')
 
 # figura: la mediana alrededor de todos los inicios
 if len(tiempo):
