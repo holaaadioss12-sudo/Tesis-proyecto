@@ -53,6 +53,7 @@ N_BOOT = 1000
 BLOQUE = 36                     # bloques de 6 h para los intervalos de confianza
 MIN_VENTANAS = 10
 BAJA_PESA = 30                  # % que tiene que bajar el error para decir que el desfase pesa
+MIN_DIF_AUC = 0.01              # diferencia de AUC mínima para que importe en la práctica
 LLAVES = ['tramo_id', 'ventana_id']
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
@@ -285,7 +286,8 @@ if len(t):
                        f'{t.loc[v, "desfase_mediano_s"]:+.0f} s)' for v in pesa) if pesa else 'ninguna.'))
 print('nivel: la reconstrucción va más arriba o más abajo. amplitud: oscila más o menos. forma: no se')
 print('mueven juntas (desfase, ruido o forma distinta). baja_con_desfase: cuánto baja el error si se corre')
-print('la reconstrucción hasta 1 min; algo baja siempre, por eso se compara con las normales.')
+print('la reconstrucción hasta 1 min; algo baja siempre, por eso se compara con las normales. En rampas')
+print('lentas (temperaturas) estar más abajo y estar atrasada se confunden: ahí bajar no implica desfase real.')
 
 
 # =============================================================================
@@ -369,12 +371,12 @@ print('\n'.join(LINEAS))
 _d, _lo, _hi = DIF_VAL
 if np.isnan(_lo):
     print('No hay ventanas suficientes para el intervalo en validación.')
-elif _lo > 0:
+elif _lo > 0 and _d >= MIN_DIF_AUC:
     print('En validación, tolerar el desfase separa mejor: conviene usar un error que lo tolere.')
-elif _hi < 0:
+elif _hi < 0 and _d <= -MIN_DIF_AUC:
     print('En validación, tolerar el desfase separa peor: el MSE se queda.')
 else:
-    print('En validación, tolerar el desfase no cambia la separación: el MSE se queda.')
+    print(f'En validación, tolerar el desfase cambia el AUC en menos de {coma(MIN_DIF_AUC)}: el MSE se queda.')
 print('Diferencia de AUC con IC 95 % remuestreando bloques de 6 h; la comparación justa es contra el error')
 print('sin desfase del mismo tramo central (los primeros y últimos 60 s no entran en ninguno de los dos).')
 
