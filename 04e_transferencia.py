@@ -12,7 +12,8 @@ dinámica) y normalizador del modelo (se transfiere todo). El umbral P95 se
 recalibra con las normales de validación del equipo evaluado.
 Entrada:  por equipo, {EQ}_limpio.csv y {EQ}_corte_split.json (paso 01), normalizador_W60.npz,
           autoencoder_W60_normales[_sep].pt y su config (paso 03b), {EQ}_error_reconstruccion_W60.csv (paso 04)
-Salida:   04e_transferencia.csv, 04e_transferencia_variables.csv y 04e_transferencia.png en la carpeta base
+Salida:   04e_medias_desviaciones.csv, 04e_medias.png, 04e_transferencia.csv, 04e_transferencia_variables.csv y
+          04e_transferencia.png en la carpeta base
 Es descriptivo: no se elige nada; se informan validación y prueba.
 """
 import os
@@ -46,6 +47,8 @@ PERCENTIL = 95
 LLAVES = ['tramo_id', 'ventana_id']
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
+UNIDAD = {'CM': '%', 'PI': '%', 'PDF': 'kPa', 'PEL': 'kPa', **{v: '°C' for v in ['T7', 'T8', 'T9', 'T1', 'T2', 'T5']},
+          **{v: 'mm/s' for v in ['V1', 'V2', 'V3', 'V4']}}
 PROPIO, DEL_EQUIPO, DEL_MODELO = 'propio', 'del equipo evaluado', 'del modelo'
 AZULES = LinearSegmentedColormap.from_list('azules', ['#cde2fb', '#86b6ef', '#3987e5', '#256abf', '#104281'])
 
@@ -205,6 +208,59 @@ for eq in EQUIPOS:
 
 
 # =============================================================================
+# 2b. ¿LOS DATOS DE LOS TRES EQUIPOS SE PARECEN? MEDIAS Y DESVIACIONES
+# =============================================================================
+print('\n' + '=' * 72)
+print('MEDIAS Y DESVIACIONES DE CADA VARIABLE (datos con que se entrenó cada autoencoder)')
+print('=' * 72)
+PARES = [(a, b) for i, a in enumerate(EQUIPOS) for b in EQUIPOS[i + 1:]]
+filas_m = []
+for j, v in enumerate(VARIABLES):
+    f = {'variable': v, 'unidad': UNIDAD.get(v, '')}
+    for eq in EQUIPOS:
+        f[f'media_{eq}'], f[f'desv_{eq}'] = float(NORM[eq][0][j]), float(NORM[eq][1][j])
+    for a, b in PARES:
+        f[f'dif_{a}_{b}'] = float(abs(NORM[a][0][j] - NORM[b][0][j])
+                                  / np.sqrt((NORM[a][1][j] ** 2 + NORM[b][1][j] ** 2) / 2))
+    f['dif_max'] = max(f[f'dif_{a}_{b}'] for a, b in PARES) if PARES else np.nan
+    f['lectura'] = 'distinta' if f['dif_max'] >= 0.8 else ('algo distinta' if f['dif_max'] >= 0.5 else 'parecida')
+    filas_m.append(f)
+medias = pd.DataFrame(filas_m)
+medias.round(4).to_csv(f'{RUTA_BASE}/04e_medias_desviaciones.csv', sep=';', decimal=',', index=False,
+                       encoding='utf-8-sig')
+_tab = pd.DataFrame({'variable': medias.variable + ' (' + medias.unidad + ')'})
+for eq in EQUIPOS:
+    _tab[eq] = [f'{a:.1f} ± {b:.1f}' for a, b in zip(medias[f'media_{eq}'], medias[f'desv_{eq}'])]
+_tab['diferencia máx.'] = medias.dif_max.round(2)
+_tab['lectura'] = medias.lectura
+print(_tab.to_string(index=False))
+print(f'\nVariables distintas entre equipos: {(medias.lectura == "distinta").sum()} | algo distintas: '
+      f'{(medias.lectura == "algo distinta").sum()} | parecidas: {(medias.lectura == "parecida").sum()} (de {len(medias)})')
+print('media ± desviación estándar. diferencia: |media A − media B| dividido por la desviación promedio de los')
+print('dos equipos (0,5 = algo distinta, 0,8 = distinta). La media sola no basta: dos equipos pueden tener la')
+print('misma media y distinta dispersión; por eso también se compara el resultado de los modelos (sección 3).')
+
+fig, ejes = plt.subplots(2, 7, figsize=(17, 5.4))
+_col = dict(zip(EQUIPOS, ['#2a78d6', '#eb6834', '#1baf7a']))
+for ax, (j, v) in zip(ejes.flat, enumerate(VARIABLES)):
+    for k, eq in enumerate(EQUIPOS):
+        ax.errorbar(NORM[eq][0][j], k, xerr=NORM[eq][1][j], fmt='o', color=_col[eq], ms=6, capsize=3, lw=2)
+    ax.set_yticks(range(len(EQUIPOS)))
+    ax.set_yticklabels(EQUIPOS if j % 7 == 0 else [])
+    ax.set_ylim(len(EQUIPOS) - 0.4, -0.6)
+    _lect = medias.loc[j, 'lectura']
+    ax.set_title(f'{v} ({UNIDAD.get(v, "")})' + ('' if _lect == 'parecida' else f'\n{_lect}'), fontsize=10, loc='left')
+    ax.grid(alpha=0.25, axis='x')
+    for s_ in ('top', 'right'):
+        ax.spines[s_].set_visible(False)
+fig.suptitle('Media ± desviación estándar de cada variable en los datos de entrenamiento de cada equipo', x=0.01,
+             ha='left', fontsize=12)
+fig.tight_layout()
+fig.savefig(f'{RUTA_BASE}/04e_medias.png', dpi=150)
+plt.close(fig)
+
+
+# =============================================================================
 # 3. CADA MODELO SOBRE CADA EQUIPO
 # =============================================================================
 filas, filas_v = [], []
@@ -305,4 +361,5 @@ fig.suptitle('Transferencia entre equipos: la diagonal (en negrita) es el modelo
 fig.tight_layout()
 fig.savefig(f'{RUTA_BASE}/04e_transferencia.png', dpi=150)
 plt.close(fig)
-print(f'\nGuardado en {RUTA_BASE}: 04e_transferencia.csv, 04e_transferencia_variables.csv, 04e_transferencia.png')
+print(f'\nGuardado en {RUTA_BASE}: 04e_medias_desviaciones.csv, 04e_medias.png, 04e_transferencia.csv, '
+      f'04e_transferencia_variables.csv, 04e_transferencia.png')

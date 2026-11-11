@@ -3,7 +3,7 @@
 =============================================================================
 PASO 07 — TABLAS PARA POWER BI (LOS TRES EQUIPOS EN UN SOLO LUGAR)
 =============================================================================
-Entrada:  salidas de los pasos 03b, 04, 04c, 04d, 04f, 05a, 05b, 05c, 06 y 06b de cada equipo, y del 04e
+Entrada:  salidas de los pasos 02b, 03b, 04, 04c, 04d, 04f, 05a, 05b, 05c, 06 y 06b de cada equipo, y del 04e
 Salida:   carpeta powerbi/ con un CSV por tema (separador ';' y coma decimal)
 """
 import os
@@ -66,6 +66,7 @@ ventanas, por_variable, umbrales, nivel_n, curvas = [], [], [], [], []
 resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
 tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
 pron_met, pron_aviso, pron_ven, deriva_var, forma_err = [], [], [], [], []
+calor_res, calor_mes, error_inicios = [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -162,7 +163,8 @@ for eq in EQUIPOS:
                            (anticip, '06_resumen.csv'), (episodios, '06_episodios.csv'),
                            (tabla_exp, '04c_tabla_experto.csv'), (delta_var, '04c_delta_variables.csv'),
                            (etiquetas, '04c_etiquetas_resumen.csv'), (deriva, '04d_mensual.csv'), (deriva_var, '04d_variables_mensual.csv'),
-                           (forma_err, '04f_forma_error.csv'),
+                           (forma_err, '04f_forma_error.csv'), (calor_res, '02b_calor_resumen.csv'),
+                           (calor_mes, '02b_calor_mensual.csv'), (error_inicios, '04c_error_alrededor_inicios.csv'),
                            (det_nivel, '04c_deteccion_nivel.csv'), (pron_met, '06b_pronostico_metricas.csv'),
                            (pron_aviso, '06b_pronostico_aviso.csv'), (pron_ven, '06b_pronostico_ventanas.csv')]:
         t = leer(f'{r}/{archivo}')
@@ -171,8 +173,9 @@ for eq in EQUIPOS:
             lista.append(t)
 
 # --- transferencia entre equipos (04e, un archivo para los tres) --------
-transfer, transfer_var = [], []
-for lista, archivo in [(transfer, '04e_transferencia.csv'), (transfer_var, '04e_transferencia_variables.csv')]:
+transfer, transfer_var, medias_eq = [], [], []
+for lista, archivo in [(transfer, '04e_transferencia.csv'), (transfer_var, '04e_transferencia_variables.csv'),
+                       (medias_eq, '04e_medias_desviaciones.csv')]:
     t = leer(f'{RUTA_BASE}/{archivo}')
     if t is not None:
         lista.append(t)
@@ -189,7 +192,9 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (pron_met, 'pbi_pronostico_metricas.csv'), (pron_aviso, 'pbi_pronostico_aviso.csv'),
                       (pron_ven, 'pbi_pronostico_ventanas.csv'), (deriva_var, 'pbi_deriva_variables.csv'),
                       (transfer, 'pbi_transferencia.csv'), (transfer_var, 'pbi_transferencia_variables.csv'),
-                      (forma_err, 'pbi_forma_error.csv')]:
+                      (forma_err, 'pbi_forma_error.csv'), (calor_res, 'pbi_calor_resumen.csv'),
+                      (calor_mes, 'pbi_calor_mensual.csv'), (error_inicios, 'pbi_error_alrededor_inicios.csv'),
+                      (medias_eq, 'pbi_medias_equipos.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)

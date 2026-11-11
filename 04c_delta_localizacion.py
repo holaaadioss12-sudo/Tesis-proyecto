@@ -11,7 +11,8 @@ Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60
           {EQUIPO}_features_W60.csv (paso 02), 05a_nivel_ventanas.csv (opcional: separa por nivel)
 Salida:   04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_ae_vs_z.csv, 04c_tabla_experto.csv,
           04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_deteccion_nivel.csv,
-          04c_consistencia.csv, 04c_localizacion_ejemplos.png,
+          04c_consistencia.csv, 04c_localizacion_ejemplos.png, 04c_error_alrededor_inicios.csv,
+          04c_error_en_el_tiempo.png, 04c_error_promedio_inicios.png,
           04c_localizacion_ventanas.csv (lo usa el paso 05e)
 Se decide en validación; prueba solo se informa.
 """
@@ -38,6 +39,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, NullFormatter
 from sklearn.metrics import roc_auc_score
 
 import criticidad
@@ -602,7 +604,124 @@ print('obtiene 0,92 para su autoencoder y 0,62 para las etiquetas automáticas.'
 
 
 # =============================================================================
-# 10. GUARDAR
+# 10. EL ERROR DE CADA VARIABLE EN EL TIEMPO (figura 7 del paper)
+# =============================================================================
+print('\n' + '=' * 72)
+print('10. ¿EL ERROR DE CADA VARIABLE SUBE CUANDO HAY ANOMALÍA? (en el tiempo, figura 7 del paper)')
+print('=' * 72)
+ANTES, DESPUES, QUIETAS = 36, 18, 12             # 6 h antes, 3 h después, 2 h sin el evento antes
+_dv = delta[(delta.conjunto == 'val') & (delta.grupo == 'todas las anómalas')].sort_values('delta', ascending=False)
+TOP_T = list(_dv.variable.head(4)) if len(_dv) else VARIABLES[:4]
+RATIO = EV / np.maximum(ref, 1e-12)                             # error de cada variable, en veces su umbral
+RATIO_TOT = ERR / umbral
+EVENTO = 'grave' if HAY_NIVEL else 'alarma'
+evento = (nivel == '3_grave') if HAY_NIVEL else anomala
+
+
+def inicios(cj):
+    """Inicios del evento sin el evento en las QUIETAS ventanas previas del mismo tramo continuo."""
+    out = []
+    for idx in SEGS.get(cj, []):
+        e = evento[idx]
+        out += [(idx, p) for p in range(QUIETAS, len(idx)) if e[p] and not e[p - QUIETAS:p].any()]
+    return out
+
+
+SERIES = [('error total', RATIO_TOT)] + [(v, RATIO[:, VARIABLES.index(v)]) for v in TOP_T]
+filas_t = []
+for cj in ('val', 'test'):
+    ini = inicios(cj)
+    for nom, r in SERIES:
+        for k in range(-ANTES, DESPUES + 1):
+            vals = [r[idx[p + k]] for idx, p in ini if 0 <= p + k < len(idx)]
+            if vals:
+                filas_t.append({'conjunto': cj, 'serie': nom, 'minutos': 10 * k, 'inicios': len(vals),
+                                'mediana_veces_umbral': float(np.median(vals)),
+                                'p25': float(np.percentile(vals, 25)), 'p75': float(np.percentile(vals, 75))})
+tiempo = pd.DataFrame(filas_t)
+guardar(tiempo.round(4), '04c_error_alrededor_inicios.csv')
+MARCAS = [-360, -180, -60, -30, -10, 0, 30, 60, 180]
+for cj in ('val', 'test'):
+    t = tiempo[tiempo.conjunto == cj]
+    if t.empty:
+        continue
+    n_ini = int(t[(t.serie == 'error total') & (t.minutos == 0)].inicios.max())
+    print(f'\n{"Validación" if cj == "val" else "Prueba (solo se informa)"}: {n_ini} inicios de {EVENTO} '
+          f'(sin {EVENTO} en las 2 h previas). Mediana del error, en veces su umbral P95:')
+    p = t.pivot(index='serie', columns='minutos', values='mediana_veces_umbral').reindex([s for s, _ in SERIES])
+    p = p[[c for c in MARCAS if c in p.columns]]
+    p.columns = [('inicio' if c == 0 else f'{c:+d} min') for c in p.columns]
+    print(p.round(2).to_string())
+print('1 = el umbral P95 de esa variable en las ventanas normales de validación. Si la mediana pasa de 1')
+print('recién en el inicio, el error acompaña la anomalía; si pasa antes, la anticipa.')
+
+# figura: un episodio de validación, como la figura 7 del paper
+_ini = [(idx, p) for idx, p in inicios('val') if p >= ANTES and len(idx) - p > DESPUES]
+if _ini:
+    idx, p = max(_ini, key=lambda ip: (~anomala[ip[0][ip[1] - ANTES:ip[1]]]).sum())
+    sel = idx[p - ANTES:p + DESPUES + 1]
+    horas = (np.arange(len(sel)) - ANTES) / 6
+    colores = ['#52514e', '#2a78d6', '#eb6834', '#1baf7a', '#eda100']
+    fig, ejes = plt.subplots(len(SERIES), 1, figsize=(11, 2.1 * len(SERIES) + 0.8), sharex=True)
+    for ax, (nom, r), col in zip(ejes, SERIES, colores):
+        for k, s in enumerate(sel):
+            if anomala[s]:
+                ax.axvspan(horas[k] - 1 / 12, horas[k] + 1 / 12, color='#e7e6e2', lw=0,
+                           label='ventana con alarma' if k == int(np.argmax(anomala[sel])) else None)
+            if evento[s]:
+                ax.axvspan(horas[k] - 1 / 12, horas[k] + 1 / 12, color='#d03b3b', alpha=0.25, lw=0,
+                           label=f'ventana {EVENTO}' if k == int(np.argmax(evento[sel])) else None)
+        ax.plot(horas, np.maximum(r[sel], 1e-3), color=col, lw=2, marker='o', ms=3)
+        ax.axhline(1, color='#0b0b0b', lw=1, ls='--')
+        ax.set_yscale('log')
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:g}'))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_ylabel('veces su\numbral', fontsize=8)
+        ax.set_title(nom if nom == 'error total' else f'{nom} ({DESCRIPCION[nom][0].lower()})', loc='left', fontsize=10)
+        ax.grid(alpha=0.25)
+        for s_ in ('top', 'right'):
+            ax.spines[s_].set_visible(False)
+    ejes[0].legend(fontsize=8, frameon=False, loc='upper left')
+    ejes[-1].set_xlabel(f'Horas desde el inicio de la ventana {EVENTO}')
+    fecha = pd.Timestamp(m.timestamp_inicio.iloc[idx[p]]).strftime('%Y-%m-%d %H:%M')
+    fig.suptitle(f'{EQUIPO}: error de reconstrucción en el tiempo, inicio de {EVENTO} del {fecha} (validación). '
+                 'Línea punteada: umbral P95', x=0.01, ha='left', fontsize=11)
+    fig.tight_layout()
+    fig.savefig(salida('04c_error_en_el_tiempo.png'), dpi=150)
+    plt.close(fig)
+    print(f'\nEjemplo graficado: inicio de {EVENTO} del {fecha} (validación).')
+
+# figura: la mediana alrededor de todos los inicios
+if len(tiempo):
+    fig, ejes = plt.subplots(1, 2, figsize=(13, 4.6), sharey=True)
+    for ax, cj in zip(ejes, ('val', 'test')):
+        t = tiempo[tiempo.conjunto == cj]
+        for (nom, _), col in zip(SERIES, ['#52514e', '#2a78d6', '#eb6834', '#1baf7a', '#eda100']):
+            s = t[t.serie == nom]
+            ax.plot(s.minutos / 60, s.mediana_veces_umbral, color=col, lw=2.4 if nom == 'error total' else 2,
+                    ls='--' if nom == 'error total' else '-', label=nom)
+        ax.axhline(1, color='#0b0b0b', lw=1, ls=':')
+        ax.axvspan(0, DESPUES / 6, color='#d03b3b', alpha=0.08, lw=0)
+        ax.set_yscale('log')
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:g}'))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel(f'Horas desde el inicio de {EVENTO}')
+        n_ini = int(t[(t.serie == 'error total') & (t.minutos == 0)].inicios.max()) if len(t) else 0
+        ax.set_title(f'{"Validación" if cj == "val" else "Prueba"}: mediana de {n_ini} inicios', loc='left', fontsize=10)
+        ax.grid(alpha=0.25)
+        for s_ in ('top', 'right'):
+            ax.spines[s_].set_visible(False)
+    ejes[0].set_ylabel('Error, veces su umbral P95')
+    ejes[0].legend(fontsize=8, frameon=False, loc='upper left')
+    fig.suptitle(f'{EQUIPO}: el error de cada variable alrededor de los inicios de {EVENTO}', x=0.01, ha='left',
+                 fontsize=11)
+    fig.tight_layout()
+    fig.savefig(salida('04c_error_promedio_inicios.png'), dpi=150)
+    plt.close(fig)
+
+
+# =============================================================================
+# 11. GUARDAR
 # =============================================================================
 m['nivel'] = nivel
 m['familia_dominante'] = familia
@@ -620,5 +739,6 @@ guardar(m[cols], '04c_localizacion_ventanas.csv')
 print(f'\nGuardado en {RUTA_EQ}: 04c_delta_variables.csv/png, 04c_atribucion.csv, 04c_ae_vs_z.csv, 04c_tabla_experto.csv, '
       f'04c_causa_raiz.csv, 04c_etiquetas_resumen.csv, 04c_metricas.csv, 04c_deteccion_nivel.csv, '
       f'04c_consistencia.csv, '
-      f'04c_localizacion_ejemplos.png, '
+      f'04c_localizacion_ejemplos.png, 04c_error_alrededor_inicios.csv, '
+      f'04c_error_en_el_tiempo.png, 04c_error_promedio_inicios.png, '
       f'04c_localizacion_ventanas.csv')
