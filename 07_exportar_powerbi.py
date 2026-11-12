@@ -66,7 +66,7 @@ ventanas, por_variable, umbrales, nivel_n, curvas = [], [], [], [], []
 resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
 tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
 pron_met, pron_aviso, pron_ven, deriva_var, forma_err = [], [], [], [], []
-calor_res, calor_mes, error_inicios = [], [], []
+calor_res, calor_mes, error_inicios, causa_raiz = [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -127,6 +127,26 @@ for eq in EQUIPOS:
             larga['sobre_umbral'] = (larga.error_variable > larga.umbral_variable).astype(int)
             larga['veces_umbral'] = larga.error_variable / larga.umbral_variable
         por_variable.append(larga)
+
+        # --- causa raíz de cada ventana marcada (tablas 3 y 4 del paper) ---
+        if u_var is not None:
+            cr = larga[larga.clave.isin(v.loc[v.marcada_ae == 1, 'clave'])].copy()
+            cr['exceso'] = (cr.error_variable - cr.umbral_variable).clip(lower=0)
+            tot = cr.groupby('clave')[['exceso', 'error_variable']].transform('sum')
+            cr['pct_exceso'] = 100 * cr.exceso / tot.exceso.where(tot.exceso > 0)   # como el 04c
+            cr['pct_error'] = 100 * cr.error_variable / tot.error_variable          # como el paper, sobre las 14
+            cr = cr[cr.exceso > 0].copy()
+            cr['orden'] = cr.groupby('clave').exceso.rank(ascending=False, method='first').astype(int)
+            c = [x for x in ['timestamp_inicio', 'nivel_texto', 'etiqueta', 'error_reconstruccion', 'umbral_ae']
+                 if x in v.columns]
+            cr = cr.merge(v[['clave'] + c], on='clave', how='left')
+            texp = leer(f'{r}/04c_tabla_experto.csv')
+            if texp is not None:
+                c = [x for x in ['componente_principal', 'modos_de_falla', 'criticidad_mas_alta'] if x in texp.columns]
+                cr = cr.merge(texp[['variable'] + c], on='variable', how='left')
+            else:
+                print(f'  {eq}: falta 04c_tabla_experto.csv (paso 04c); la causa raíz va sin componente.')
+            causa_raiz.append(cr.sort_values(['clave', 'orden']))
     u = pd.DataFrame({'equipo': eq, 'variable': ['TOTAL'], 'umbral_P95': [umbral_ae]})
     if u_var is not None:
         u = pd.concat([u, u_var.assign(equipo=eq)[['equipo', 'variable', 'umbral_P95']]])
@@ -194,7 +214,7 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (transfer, 'pbi_transferencia.csv'), (transfer_var, 'pbi_transferencia_variables.csv'),
                       (forma_err, 'pbi_forma_error.csv'), (calor_res, 'pbi_calor_resumen.csv'),
                       (calor_mes, 'pbi_calor_mensual.csv'), (error_inicios, 'pbi_error_alrededor_inicios.csv'),
-                      (medias_eq, 'pbi_medias_equipos.csv')]:
+                      (causa_raiz, 'pbi_causa_raiz.csv'), (medias_eq, 'pbi_medias_equipos.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)
