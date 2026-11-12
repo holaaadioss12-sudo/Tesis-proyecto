@@ -67,6 +67,7 @@ resumen, agrup, perfil, proto, anticip, episodios = [], [], [], [], [], []
 tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
 pron_met, pron_aviso, pron_ven, deriva_var, forma_err = [], [], [], [], []
 calor_res, calor_mes, error_inicios, causa_raiz = [], [], [], []
+eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -142,10 +143,14 @@ for eq in EQUIPOS:
             cr = cr.merge(v[['clave'] + c], on='clave', how='left')
             texp = leer(f'{r}/04c_tabla_experto.csv')
             if texp is not None:
-                c = [x for x in ['componente_principal', 'modos_de_falla', 'criticidad_mas_alta'] if x in texp.columns]
-                cr = cr.merge(texp[['variable'] + c], on='variable', how='left')
+                t = texp[['variable'] + [x for x in ['componente_principal', 'criticidad_mas_alta'] if x in texp.columns]].copy()
+                if 'modos_de_falla' in texp.columns:   # el más crítico; la lista completa está en pbi_tabla_experto
+                    t['modo_falla_principal'] = texp.modos_de_falla.fillna('').str.split(' | ', regex=False).str[0]
+                cr = cr.merge(t, on='variable', how='left')
             else:
                 print(f'  {eq}: falta 04c_tabla_experto.csv (paso 04c); la causa raíz va sin componente.')
+            cr = cr.round({'error_variable': 6, 'umbral_variable': 6, 'veces_umbral': 3, 'exceso': 6,
+                           'pct_exceso': 2, 'pct_error': 2, 'error_reconstruccion': 6, 'umbral_ae': 6})
             causa_raiz.append(cr.sort_values(['clave', 'orden']))
     u = pd.DataFrame({'equipo': eq, 'variable': ['TOTAL'], 'umbral_P95': [umbral_ae]})
     if u_var is not None:
@@ -186,7 +191,10 @@ for eq in EQUIPOS:
                            (forma_err, '04f_forma_error.csv'), (calor_res, '02b_calor_resumen.csv'),
                            (calor_mes, '02b_calor_mensual.csv'), (error_inicios, '04c_error_alrededor_inicios.csv'),
                            (det_nivel, '04c_deteccion_nivel.csv'), (pron_met, '06b_pronostico_metricas.csv'),
-                           (pron_aviso, '06b_pronostico_aviso.csv'), (pron_ven, '06b_pronostico_ventanas.csv')]:
+                           (pron_aviso, '06b_pronostico_aviso.csv'), (pron_ven, '06b_pronostico_ventanas.csv'),
+                           (eleccion_k, '03a_latente_temporal.csv'), (atribucion, '04c_atribucion.csv'),
+                           (metricas, '04c_metricas.csv'), (consistencia, '04c_consistencia.csv'),
+                           (agr_det, '05e_deteccion.csv'), (escalas, '05b_comparacion.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -214,7 +222,10 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (transfer, 'pbi_transferencia.csv'), (transfer_var, 'pbi_transferencia_variables.csv'),
                       (forma_err, 'pbi_forma_error.csv'), (calor_res, 'pbi_calor_resumen.csv'),
                       (calor_mes, 'pbi_calor_mensual.csv'), (error_inicios, 'pbi_error_alrededor_inicios.csv'),
-                      (causa_raiz, 'pbi_causa_raiz.csv'), (medias_eq, 'pbi_medias_equipos.csv')]:
+                      (causa_raiz, 'pbi_causa_raiz.csv'), (medias_eq, 'pbi_medias_equipos.csv'),
+                      (eleccion_k, 'pbi_eleccion_k.csv'), (atribucion, 'pbi_atribucion.csv'),
+                      (metricas, 'pbi_metricas.csv'), (consistencia, 'pbi_consistencia.csv'),
+                      (agr_det, 'pbi_agrupamiento_deteccion.csv'), (escalas, 'pbi_nivel_escalas.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)
