@@ -3,7 +3,8 @@
 =============================================================================
 PASO 07 — TABLAS PARA POWER BI (LOS TRES EQUIPOS EN UN SOLO LUGAR)
 =============================================================================
-Entrada:  salidas de los pasos 02b, 03b, 04, 04c, 04d, 04f, 05a, 05b, 05c, 06 y 06b de cada equipo, y del 04e
+Entrada:  salidas de los pasos 02b, 03a, 03b, 04, 04c, 04d, 04f, 04g, 05a, 05b, 05c, 06 y 06b de cada equipo,
+          y del 04e y el 03a (k común) en la carpeta base
 Salida:   carpeta powerbi/ con un CSV por tema (separador ';' y coma decimal)
 """
 import os
@@ -68,6 +69,7 @@ tabla_exp, delta_var, etiquetas, deriva, det_nivel = [], [], [], [], []
 pron_met, pron_aviso, pron_ven, deriva_var, forma_err = [], [], [], [], []
 calor_res, calor_mes, error_inicios, causa_raiz = [], [], [], []
 eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [], [], []
+eleccion_k_res, val_ind, val_dist, val_acu, val_conf, val_des, val_fir = [], [], [], [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -112,6 +114,15 @@ for eq in EQUIPOS:
                 print(f'  OJO: la etiqueta del 04c no coincide con marcada_ae; ¿el 04c es de otra corrida del 04?')
     else:
         print(f'  {eq}: falta 04c_localizacion_ventanas.csv (paso 04c); sin etiqueta componente · nivel.')
+    g = leer(f'{r}/04g_ventanas.csv')
+    if g is not None:                    # lo que dicen las alarmas y si coincide (paso 04g)
+        g = g.rename(columns={'reglas': 'reglas_que_sonaron'})
+        c = [x for x in ['mes', 'reglas_que_sonaron', 'componente_alarma', 'componentes_alarma', 'acuerdo_variable',
+                         'acuerdo_estricto', 'acuerdo_amplio', 'caso', 'lectura', 'tipo_lectura', 'sentido',
+                         'sentido_vigilado', 'firma'] if x in g.columns and x not in v.columns]
+        v = v.merge(g[LLAVES + c], on=LLAVES, how='left')
+    else:
+        print(f'  {eq}: falta 04g_ventanas.csv (paso 04g); sin la comparación con las alarmas.')
     ventanas.append(v)
 
     # --- error por variable, en formato largo ----------------------------
@@ -194,16 +205,20 @@ for eq in EQUIPOS:
                            (pron_aviso, '06b_pronostico_aviso.csv'), (pron_ven, '06b_pronostico_ventanas.csv'),
                            (eleccion_k, '03a_latente_temporal.csv'), (atribucion, '04c_atribucion.csv'),
                            (metricas, '04c_metricas.csv'), (consistencia, '04c_consistencia.csv'),
-                           (agr_det, '05e_deteccion.csv'), (escalas, '05b_comparacion.csv')]:
+                           (agr_det, '05e_deteccion.csv'), (escalas, '05b_comparacion.csv'),
+                           (eleccion_k_res, '03a_eleccion.csv'), (val_ind, '04g_indicador_variable.csv'),
+                           (val_dist, '04g_distribucion.csv'), (val_acu, '04g_acuerdo.csv'),
+                           (val_conf, '04g_confusion.csv'), (val_des, '04g_desacuerdos.csv'),
+                           (val_fir, '04g_firmas.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
             lista.append(t)
 
 # --- transferencia entre equipos (04e, un archivo para los tres) --------
-transfer, transfer_var, medias_eq = [], [], []
+transfer, transfer_var, medias_eq, k_comun = [], [], [], []
 for lista, archivo in [(transfer, '04e_transferencia.csv'), (transfer_var, '04e_transferencia_variables.csv'),
-                       (medias_eq, '04e_medias_desviaciones.csv')]:
+                       (medias_eq, '04e_medias_desviaciones.csv'), (k_comun, '03a_k_comun.csv')]:
     t = leer(f'{RUTA_BASE}/{archivo}')
     if t is not None:
         lista.append(t)
@@ -225,7 +240,11 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (causa_raiz, 'pbi_causa_raiz.csv'), (medias_eq, 'pbi_medias_equipos.csv'),
                       (eleccion_k, 'pbi_eleccion_k.csv'), (atribucion, 'pbi_atribucion.csv'),
                       (metricas, 'pbi_metricas.csv'), (consistencia, 'pbi_consistencia.csv'),
-                      (agr_det, 'pbi_agrupamiento_deteccion.csv'), (escalas, 'pbi_nivel_escalas.csv')]:
+                      (agr_det, 'pbi_agrupamiento_deteccion.csv'), (escalas, 'pbi_nivel_escalas.csv'),
+                      (eleccion_k_res, 'pbi_eleccion_k_resumen.csv'), (k_comun, 'pbi_k_comun.csv'),
+                      (val_ind, 'pbi_validacion_variables.csv'), (val_dist, 'pbi_validacion_distribucion.csv'),
+                      (val_acu, 'pbi_validacion_acuerdo.csv'), (val_conf, 'pbi_validacion_confusion.csv'),
+                      (val_des, 'pbi_validacion_desacuerdos.csv'), (val_fir, 'pbi_validacion_firmas.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)

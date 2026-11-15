@@ -45,7 +45,7 @@ if device.type != 'cuda':
 W = 60
 STRIDE_TRAIN = 12    # ventanas cada 2 min -- traslape alto, más ejemplos
 STRIDE_EVAL = W      # sin traslape en val/test
-EPOCHS_MAX = int(_os.environ.get('EPOCAS_MAX', 100))
+EPOCHS_MAX = int(_os.environ.get('EPOCAS_MAX', 300))   # tope alto: que pare la parada temprana
 PACIENCIA = 15       # épocas sin mejorar la pérdida de validación
 
 # Autoencoder temporal: latente de 60 x LATENT_DIM (reduce variables, conserva el tiempo).
