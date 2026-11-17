@@ -70,6 +70,7 @@ pron_met, pron_aviso, pron_ven, deriva_var, forma_err = [], [], [], [], []
 calor_res, calor_mes, error_inicios, causa_raiz = [], [], [], []
 eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [], [], []
 eleccion_k_res, val_ind, val_dist, val_acu, val_conf, val_des, val_fir = [], [], [], [], [], [], []
+pca_barr, pca_cargas, pca_det, pca_comp, pca_loc, pca_delta = [], [], [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -209,7 +210,10 @@ for eq in EQUIPOS:
                            (eleccion_k_res, '03a_eleccion.csv'), (val_ind, '04g_indicador_variable.csv'),
                            (val_dist, '04g_distribucion.csv'), (val_acu, '04g_acuerdo.csv'),
                            (val_conf, '04g_confusion.csv'), (val_des, '04g_desacuerdos.csv'),
-                           (val_fir, '04g_firmas.csv')]:
+                           (val_fir, '04g_firmas.csv'), (pca_barr, '04h_pca_barrido.csv'),
+                           (pca_cargas, '04h_pca_cargas.csv'), (pca_det, '04h_pca_deteccion.csv'),
+                           (pca_comp, '04h_pca_comparaciones.csv'), (pca_loc, '04h_pca_localizacion.csv'),
+                           (pca_delta, '04h_pca_delta.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -244,7 +248,10 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (eleccion_k_res, 'pbi_eleccion_k_resumen.csv'), (k_comun, 'pbi_k_comun.csv'),
                       (val_ind, 'pbi_validacion_variables.csv'), (val_dist, 'pbi_validacion_distribucion.csv'),
                       (val_acu, 'pbi_validacion_acuerdo.csv'), (val_conf, 'pbi_validacion_confusion.csv'),
-                      (val_des, 'pbi_validacion_desacuerdos.csv'), (val_fir, 'pbi_validacion_firmas.csv')]:
+                      (val_des, 'pbi_validacion_desacuerdos.csv'), (val_fir, 'pbi_validacion_firmas.csv'),
+                      (pca_barr, 'pbi_pca_barrido.csv'), (pca_cargas, 'pbi_pca_cargas.csv'),
+                      (pca_det, 'pbi_pca_deteccion.csv'), (pca_comp, 'pbi_pca_comparaciones.csv'),
+                      (pca_loc, 'pbi_pca_localizacion.csv'), (pca_delta, 'pbi_pca_delta.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)
