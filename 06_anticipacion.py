@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-PASO 06 — ¿EL AUTOENCODER AVISA ANTES QUE LAS REGLAS?
+PASO 06 — ¿EL AUTOENCODER AVISA ANTES QUE LAS REGLAS? (CON ALARMAS NUEVAS Y REACTIVACIONES)
 =============================================================================
 """
 
@@ -56,6 +56,14 @@ N_BOOT = 1000
 
 N_MIN_MARCADAS = 30
 
+# Alarma nueva o reactivación (sección 6c): un inicio es NUEVO si antes tuvo al
+# menos CALMA_MIN minutos sin ninguna alarma en su tramo, y es una REACTIVACIÓN
+# si una alarma del mismo tramo se apagó hace menos. 60 min es la misma hora de
+# historia que el 06b usa como persistencia; 30 y 120 min se informan para ver
+# si la conclusión depende del corte.
+CALMA_MIN = 60
+CALMAS_SENSIBILIDAD = [30, 60, 120]
+
 PUNTO_PARADA = os.environ.get('PUNTO_PARADA', 'perdida')   # 'perdida' o 'separacion'
 if PUNTO_PARADA not in ('perdida', 'separacion'):
     raise SystemExit(f"PUNTO_PARADA tiene que ser 'perdida' o 'separacion', no {PUNTO_PARADA!r}.")
@@ -109,6 +117,52 @@ assert sin_error == 0, (f'{sin_error} ventanas de tramos de val/test sin error '
 
 _salto = d.groupby('tramo_id').ventana_id.diff().dropna()
 assert (_salto == 1).all(), 'ventana_id no es contiguo dentro de algún tramo'
+
+
+def historia_alarmas(v):
+    """Para cada ventana, con todo el registro de su tramo (entrenamiento incluido):
+    racha_quieta = cuántas ventanas sin alarma seguidas terminan en ella (0 si tiene
+    alarma) y alarma_antes = si antes de esa racha hubo una alarma en el mismo tramo
+    (False si la racha llega al inicio del tramo: la historia no se conoce)."""
+    v = v[LLAVES + ['n_reglas_activas']].sort_values(LLAVES)
+    al = (v.n_reglas_activas > 0).to_numpy()
+    tr, vid = v.tramo_id.to_numpy(), v.ventana_id.to_numpy()
+    racha = np.zeros(len(v), dtype=int)
+    previa = np.zeros(len(v), dtype=bool)
+    for i in range(len(v)):
+        if al[i]:
+            continue
+        if i == 0 or tr[i] != tr[i - 1] or vid[i] != vid[i - 1] + 1:
+            racha[i] = 1
+        elif al[i - 1]:
+            racha[i], previa[i] = 1, True
+        else:
+            racha[i], previa[i] = racha[i - 1] + 1, previa[i - 1]
+    return pd.DataFrame({'tramo_id': v.tramo_id.to_numpy(), 'ventana_id': vid,
+                         'racha_quieta': racha, 'alarma_antes': previa})
+
+
+d = d.merge(historia_alarmas(ventanas), on=LLAVES, how='left', validate='one_to_one')
+if CALMA_MIN % MIN_POR_VENTANA or any(c % MIN_POR_VENTANA for c in CALMAS_SENSIBILIDAD):
+    raise SystemExit(f'CALMA_MIN y CALMAS_SENSIBILIDAD tienen que ser múltiplos de '
+                     f'{MIN_POR_VENTANA:.0f} min (una ventana).')
+H_CALMA = int(CALMA_MIN // MIN_POR_VENTANA)
+
+
+def clase_inicio(racha, previa, h):
+    """Tipo de un inicio según la ventana quieta que lo precede: 'nueva' si hubo al
+    menos h ventanas sin alarma, 'reactivacion' si una alarma del tramo se apagó
+    hace menos, 'sin_historia' si el tramo empezó hace menos (no se puede saber)."""
+    racha = np.asarray(racha, dtype=int)
+    previa = np.asarray(previa, dtype=bool)
+    return np.where(racha >= h, 'nueva',
+                    np.where(previa, 'reactivacion', 'sin_historia'))
+
+
+# el mismo criterio, visto desde una ventana quieta: ¿viene de horas de calma o
+# de una alarma que se acaba de apagar?
+CONTEXTO_DE = {'nueva': 'calma', 'reactivacion': 'alarma_reciente',
+               'sin_historia': 'sin_historia'}
 
 d['alarma'] = d.n_reglas_activas > 0
 d['quieta'] = ~d.alarma
@@ -298,6 +352,10 @@ for i in np.flatnonzero(inicio.to_numpy()):
            'criticidad': int(_crit[peor]), 'componente': _comp[peor],
            'trip': bool(set(np.array(ids_reglas)[nuevas]) & set(criticidad.REGLAS_TRIP)),
            'quietas_previas': 0}
+    # con toda la historia del tramo (06c): la ventana quieta justo antes del inicio
+    _prev = te.iloc[i - 1]
+    reg['quietas_antes'] = int(_prev.racha_quieta)
+    reg['alarma_antes'] = bool(_prev.alarma_antes)
     # cuántas ventanas quietas hay justo antes, y cuántas marcadas seguidas
     j = i - 1
     while (j >= 0 and te.iloc[j].tramo_id == fila.tramo_id
@@ -314,6 +372,10 @@ for i in np.flatnonzero(inicio.to_numpy()):
         reg[f'anticip_{nom}_min'] = n * MIN_POR_VENTANA
     eps.append(reg)
 eps = pd.DataFrame(eps)
+if len(eps):
+    eps['min_desde_alarma_previa'] = np.where(
+        eps.alarma_antes, eps.quietas_antes * MIN_POR_VENTANA, np.nan)
+    eps['tipo_inicio'] = clase_inicio(eps.quietas_antes, eps.alarma_antes, H_CALMA)
 
 filas_res = []
 if len(eps):
@@ -444,6 +506,189 @@ if len(resumen):
 
 
 # =============================================================================
+# 6c. ALARMAS NUEVAS Y REACTIVACIONES
+# =============================================================================
+print('\n' + '=' * 72)
+print(f'6c. ALARMAS NUEVAS Y REACTIVACIONES (calma de {CALMA_MIN} min, prueba)')
+print('=' * 72)
+print('Una alarma que se apagó hace 10 min y vuelve no es una alarma nueva: la')
+print('ventana quieta de en medio todavía arrastra la perturbación, y marcarla no')
+print('es anticipar. Cada inicio se clasifica por lo que pasó antes en su tramo:')
+print(f'  nueva         al menos {CALMA_MIN} min sin ninguna alarma antes del inicio')
+print(f'  reactivacion  una alarma del mismo tramo se apagó hace menos de {CALMA_MIN} min')
+print(f'  sin_historia  el tramo empezó hace menos de {CALMA_MIN} min: no se sabe')
+print('El azar de cada tipo sale de ventanas quietas a la misma distancia de la')
+print('alarma anterior que NO fueron seguidas por una alarma.')
+
+TIPOS = ['nueva', 'reactivacion', 'sin_historia']
+
+
+def _clave_distancia(racha, previa, h):
+    """'calma' si hubo h o más ventanas sin alarma; si no, la distancia exacta a la
+    alarma anterior, con r (hubo alarma antes) o s (sin historia) adelante."""
+    racha = np.asarray(racha, dtype=int)
+    previa = np.asarray(previa, dtype=bool)
+    return np.where(racha >= h, 'calma',
+                    np.char.add(np.where(previa, 'r', 's'), racha.astype(str)))
+
+
+def _azar_por_inicio(nom, h):
+    """Para cada inicio, la probabilidad de que la ventana quieta anterior quede marcada
+    si la marca no supiera nada de la alarma que viene: la tasa de marcas en ventanas
+    quietas de prueba NO seguidas por alarma y a la misma distancia de la alarma
+    anterior (si no hay ninguna a esa distancia, la tasa de su contexto)."""
+    c = te[te.quieta & (te.futura_1 == 0)]
+    marca = pd.Series(c[f'marca_{nom}'].to_numpy())
+    fina = marca.groupby(_clave_distancia(c.racha_quieta, c.alarma_antes, h)).mean()
+    gruesa = marca.groupby(pd.Series(clase_inicio(c.racha_quieta, c.alarma_antes, h))
+                           .map(CONTEXTO_DE).to_numpy()).mean()
+    p = pd.Series(_clave_distancia(eps.quietas_antes, eps.alarma_antes, h)).map(fina)
+    ctx = pd.Series(clase_inicio(eps.quietas_antes, eps.alarma_antes, h)).map(CONTEXTO_DE)
+    return p.fillna(ctx.map(gruesa)).to_numpy(dtype=float)
+
+
+def _riesgo(q, nom, k):
+    """Riesgo relativo de alarma en las próximas k ventanas, marcada contra no marcada."""
+    m = q[f'marca_{nom}'].astype(bool)
+    y = q[f'futura_{k}'].astype(bool)
+    p1 = float(y[m].mean()) if m.any() else np.nan
+    p0 = float(y[~m].mean()) if (~m).any() else np.nan
+
+    def rr(x):
+        mm, yy = x[f'marca_{nom}'].astype(bool), x[f'futura_{k}'].astype(bool)
+        a = yy[mm].mean() if mm.any() else np.nan
+        b = yy[~mm].mean() if (~mm).any() else np.nan
+        return a / b if np.isfinite(b) and b > 0 else np.nan
+
+    suf = int(m.sum()) >= N_MIN_MARCADAS
+    lo, hi = bootstrap_tramos(q, rr) if suf else (np.nan, np.nan)
+    return {'quietas': len(q), 'marcadas': int(m.sum()),
+            'p_alarma_si_marcada': round(p1, 4) if suf else np.nan,
+            'p_alarma_si_no_marcada': round(p0, 4),
+            'riesgo_relativo': round(p1 / p0, 3) if suf and p0 > 0 else np.nan,
+            'rr_ic_inf': round(lo, 3), 'rr_ic_sup': round(hi, 3),
+            'n_suficiente': suf}
+
+
+def _auc_anticipacion(q, col):
+    """AUC del puntaje para separar las quietas seguidas por alarma de las que no."""
+    def f(x):
+        return roc_auc_score(x.y, x[col]) if x.y.nunique() == 2 else np.nan
+    a = f(q)
+    if not np.isfinite(a):
+        return np.nan, np.nan, np.nan
+    lo, hi = bootstrap_tramos(q, f)
+    return a, lo, hi
+
+
+filas_tipo, filas_ctx = [], []
+for calma in CALMAS_SENSIBILIDAD:
+    h = int(calma // MIN_POR_VENTANA)
+    principal = calma == CALMA_MIN
+
+    # --- inicios: ¿la ventana quieta anterior quedó marcada? -------------
+    if len(eps):
+        tipo = clase_inicio(eps.quietas_antes, eps.alarma_antes, h)
+        for nom in DETECTORES:
+            col = f'anticip_{nom}_min'
+            azar_i = _azar_por_inicio(nom, h)
+            for t in TIPOS:
+                sel = tipo == t
+                fila = {'calma_min': calma, 'principal': principal,
+                        'tipo_inicio': t, 'detector': nom, 'inicios': int(sel.sum()),
+                        'pct_de_los_inicios': round(100 * sel.mean(), 1)}
+                if sel.any():
+                    e = eps.loc[sel, ['tramo_id', col]]
+                    av = e[col] > 0
+                    lo, hi = bootstrap_tramos(e, lambda x, col=col: (x[col] > 0).mean())
+                    fila.update({
+                        'pct_avisados': round(100 * av.mean(), 1),
+                        'ic_inf': round(100 * lo, 1), 'ic_sup': round(100 * hi, 1),
+                        'pct_esperado_por_azar': round(100 * float(np.nanmean(azar_i[sel])), 1),
+                        'adelanto_mediano_min': (float(e.loc[av, col].median())
+                                                 if av.any() else np.nan),
+                        'nota': 'n insuficiente' if sel.sum() < N_MIN_MARCADAS else ''})
+                filas_tipo.append(fila)
+
+    # --- ventanas quietas: riesgo relativo y AUC según el contexto -------
+    ctx = pd.Series(clase_inicio(te.racha_quieta, te.alarma_antes, h),
+                    index=te.index).map(CONTEXTO_DE)
+    for c in ('calma', 'alarma_reciente'):
+        for nom, col_det in DETECTORES.items():
+            for k in (HORIZONTES if principal else [1]):
+                q = te.loc[te.quieta & te[f'futura_{k}'].notna() & (ctx == c),
+                           ['tramo_id', f'marca_{nom}', f'futura_{k}', col_det]]
+                fila = {'calma_min': calma, 'principal': principal, 'contexto': c,
+                        'detector': nom, 'horizonte_min': int(k * MIN_POR_VENTANA)}
+                if len(q):
+                    fila.update(_riesgo(q, nom, k))
+                    if k == 1:
+                        a, lo, hi = _auc_anticipacion(
+                            q.assign(y=q.futura_1.astype(bool)), col_det)
+                        fila.update({'auc_anticipacion': round(a, 3),
+                                     'auc_ic_inf': round(lo, 3), 'auc_ic_sup': round(hi, 3)})
+                else:
+                    fila.update({'quietas': 0, 'marcadas': 0, 'n_suficiente': False})
+                filas_ctx.append(fila)
+
+tipos_ini = pd.DataFrame(filas_tipo)
+prec_ctx = pd.DataFrame(filas_ctx)
+
+if len(eps):
+    _n = tipos_ini[tipos_ini.principal & (tipos_ini.detector == DETECTOR_PRINCIPAL)]
+    print(f'\nInicios de prueba por tipo: ' + ' | '.join(
+        f'{r.tipo_inicio} {r.inicios} ({r.pct_de_los_inicios:.0f} %)' for _, r in _n.iterrows()))
+    _r = eps.loc[eps.tipo_inicio == 'reactivacion', 'min_desde_alarma_previa']
+    if len(_r):
+        print(f'Reactivaciones: la alarma anterior se había apagado hace una mediana de '
+              f'{_r.median():.0f} min; el {100 * (_r <= 10).mean():.0f} % volvió en 10 min '
+              f'o menos y el {100 * (_r <= 30).mean():.0f} % en 30 min o menos.')
+    _a = eps.loc[eps.alarma_antes, 'min_desde_alarma_previa']
+    if len(_a):
+        print(f'Inicios con alguna alarma antes en su tramo, a cualquier distancia: '
+              f'{len(_a)} de {len(eps)} ({100 * len(_a) / len(eps):.0f} %), mediana '
+              f'{_a.median():.0f} min desde que se apagó.')
+
+    print('\n¿Avisó antes del inicio? (la ventana quieta anterior quedó marcada)')
+    print(f'  {"detector":<16} {"tipo":<13} {"inicios":>7} {"avisó":>7}  {"IC 95 %":<13} '
+          f'{"azar":>6} {"adelanto":>9}')
+    for _, r in tipos_ini[tipos_ini.principal & (tipos_ini.inicios > 0)].iterrows():
+        print(f'  {r.detector:<16} {r.tipo_inicio:<13} {r.inicios:>7} {r.pct_avisados:>6.1f}%  '
+              f'[{r.ic_inf:4.1f}-{r.ic_sup:4.1f}]  {r.pct_esperado_por_azar:>5.1f}% '
+              f'{r.adelanto_mediano_min:>5.0f} min  {r.nota}')
+else:
+    print('No hay inicios de episodio observables en prueba.')
+
+print(f'\nRiesgo relativo y AUC de anticipación según el contexto de la ventana quieta:')
+print(f'calma = al menos {CALMA_MIN} min sin alarma; alarma_reciente = se apagó una hace menos.')
+_cols = ['contexto', 'detector', 'horizonte_min', 'quietas', 'marcadas', 'riesgo_relativo',
+         'rr_ic_inf', 'rr_ic_sup', 'auc_anticipacion', 'auc_ic_inf', 'auc_ic_sup']
+print(prec_ctx[prec_ctx.principal].reindex(columns=_cols).to_string(index=False))
+
+print(f'\nSensibilidad al corte de calma ({DETECTOR_PRINCIPAL}, 10 min):')
+for calma in CALMAS_SENSIBILIDAD:
+    _t = tipos_ini[(tipos_ini.calma_min == calma) & (tipos_ini.detector == DETECTOR_PRINCIPAL)
+                   & (tipos_ini.tipo_inicio == 'nueva')]
+    _c = prec_ctx[(prec_ctx.calma_min == calma) & (prec_ctx.detector == DETECTOR_PRINCIPAL)
+                  & (prec_ctx.contexto == 'calma') & (prec_ctx.horizonte_min == 10)]
+    _txt = f'  {calma:>4} min: '
+    if len(_t) and _t.iloc[0].inicios:
+        _t = _t.iloc[0]
+        _txt += (f'{_t.inicios} inicios nuevos, avisó {_t.pct_avisados:.1f} % '
+                 f'(azar {_t.pct_esperado_por_azar:.1f} %)')
+    else:
+        _txt += 'sin inicios nuevos'
+    if len(_c):
+        _c = _c.iloc[0]
+        _txt += (f' | RR en calma {_c.riesgo_relativo:.2f} [{_c.rr_ic_inf:.2f}, {_c.rr_ic_sup:.2f}]'
+                 if _c.n_suficiente else f' | RR en calma: n insuficiente ({_c.marcadas} marcadas)')
+        if np.isfinite(_c.get('auc_anticipacion', np.nan)):
+            _txt += (f' | AUC {_c.auc_anticipacion:.3f} '
+                     f'[{_c.auc_ic_inf:.3f}, {_c.auc_ic_sup:.3f}]')
+    print(_txt)
+
+
+# =============================================================================
 # 7. GUARDAR Y LEER
 # =============================================================================
 print('\n' + '=' * 72)
@@ -451,7 +696,9 @@ print('7. GUARDANDO')
 print('=' * 72)
 for _df, _f in ((prec, SALIDA_PRECURSORES), (eps, SALIDA_EPISODIOS),
                 (resumen, SALIDA_RESUMEN),
-                (deriva, f'{RUTA_EQ}/06_deriva.csv')):
+                (deriva, f'{RUTA_EQ}/06_deriva.csv'),
+                (tipos_ini, f'{RUTA_EQ}/06_inicios_por_tipo.csv'),
+                (prec_ctx, f'{RUTA_EQ}/06_precursores_contexto.csv')):
     _df.to_csv(_f, sep=';', decimal=',', index=False, encoding='utf-8-sig')
     print(f'Guardado: {_f}')
 
@@ -496,9 +743,60 @@ if len(resumen):
     if p.auc_ic_inf > 0.5:
         print('\nLa anticipación existe y no es azar: el objetivo de PRONOSTICAR')
         print('síntomas queda respaldado, con el horizonte que permiten los tramos.')
+        print('Ojo: esto mezcla alarmas nuevas y reactivaciones; lo que sigue las separa.')
     else:
         print('\nEl AUC de anticipación no se separa de 0,5: con estos datos el')
         print('autoencoder DETECTA pero no ANTICIPA. Hay que decirlo así.')
+
+if len(tipos_ini):
+    _t = (tipos_ini[tipos_ini.principal & (tipos_ini.detector == DETECTOR_PRINCIPAL)]
+          .set_index('tipo_inicio'))
+    _c = (prec_ctx[prec_ctx.principal & (prec_ctx.detector == DETECTOR_PRINCIPAL)
+                   & (prec_ctx.horizonte_min == 10)].set_index('contexto'))
+    print(f'\nALARMAS NUEVAS (al menos {CALMA_MIN} min sin alarma antes): '
+          f'{int(_t.loc["nueva", "inicios"])} de {len(eps)} inicios '
+          f'({_t.loc["nueva", "pct_de_los_inicios"]:.0f} %).')
+    if _t.loc['nueva', 'inicios']:
+        print(f'  Avisó antes del {_t.loc["nueva", "pct_avisados"]} % '
+              f'(IC {_t.loc["nueva", "ic_inf"]}-{_t.loc["nueva", "ic_sup"]}); por azar '
+              f'{_t.loc["nueva", "pct_esperado_por_azar"]} %.')
+    if _t.loc['reactivacion', 'inicios']:
+        print(f'REACTIVACIONES: {int(_t.loc["reactivacion", "inicios"])} inicios; avisó '
+              f'antes del {_t.loc["reactivacion", "pct_avisados"]} %; por azar '
+              f'{_t.loc["reactivacion", "pct_esperado_por_azar"]} %.')
+
+    _ok_rr = _ok_auc = False
+    if 'calma' in _c.index and _c.loc['calma', 'quietas']:
+        r = _c.loc['calma']
+        if r.n_suficiente:
+            _ok_rr = r.rr_ic_inf > 1
+            print(f'En calma, una ventana marcada tiene {r.riesgo_relativo:.2f} veces más '
+                  f'probabilidad de ser seguida por una alarma en 10 min '
+                  f'(IC {r.rr_ic_inf:.2f}-{r.rr_ic_sup:.2f}).')
+        else:
+            print(f'En calma: n insuficiente para el riesgo relativo ({r.marcadas} quietas '
+                  f'marcadas, mínimo {N_MIN_MARCADAS}).')
+        if np.isfinite(r.get('auc_anticipacion', np.nan)):
+            _ok_auc = r.auc_ic_inf > 0.5
+            print(f'AUC de anticipación en calma: {r.auc_anticipacion:.3f} '
+                  f'(IC {r.auc_ic_inf:.3f}-{r.auc_ic_sup:.3f}).')
+        _z = prec_ctx[prec_ctx.principal & (prec_ctx.detector == 'z_medias')
+                      & (prec_ctx.contexto == 'calma') & (prec_ctx.horizonte_min == 10)]
+        if len(_z) and np.isfinite(_z.iloc[0].get('auc_anticipacion', np.nan)):
+            _z = _z.iloc[0]
+            print(f'  z de las medias, en calma: AUC {_z.auc_anticipacion:.3f} '
+                  f'(IC {_z.auc_ic_inf:.3f}-{_z.auc_ic_sup:.3f}).')
+
+    print('\nLECTURA:')
+    if _ok_rr or _ok_auc:
+        print('-> También en calma, lejos de una alarma anterior, el puntaje sube antes')
+        print('   de una alarma nueva: la anticipación no es solo la perturbación que')
+        print('   sigue después de que la regla se apagó. El horizonte es el de arriba.')
+    else:
+        print('-> Lejos de una alarma anterior la marca no se separa del azar: la')
+        print('   anticipación del total viene de las reactivaciones, es decir, el modelo')
+        print('   ve que la perturbación sigue cuando la regla ya se apagó. Eso sirve para')
+        print('   no dar por cerrada una alarma, pero no es anticipar alarmas nuevas.')
 
 print('\n' + '=' * 72)
 print('LISTO.')

@@ -71,6 +71,7 @@ calor_res, calor_mes, error_inicios, causa_raiz = [], [], [], []
 eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [], [], []
 eleccion_k_res, val_ind, val_dist, val_acu, val_conf, val_des, val_fir = [], [], [], [], [], [], []
 pca_barr, pca_cargas, pca_det, pca_comp, pca_loc, pca_delta = [], [], [], [], [], []
+inicios_tipo, prec_contexto = [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -213,7 +214,8 @@ for eq in EQUIPOS:
                            (val_fir, '04g_firmas.csv'), (pca_barr, '04h_pca_barrido.csv'),
                            (pca_cargas, '04h_pca_cargas.csv'), (pca_det, '04h_pca_deteccion.csv'),
                            (pca_comp, '04h_pca_comparaciones.csv'), (pca_loc, '04h_pca_localizacion.csv'),
-                           (pca_delta, '04h_pca_delta.csv')]:
+                           (pca_delta, '04h_pca_delta.csv'), (inicios_tipo, '06_inicios_por_tipo.csv'),
+                           (prec_contexto, '06_precursores_contexto.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
@@ -251,7 +253,9 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (val_des, 'pbi_validacion_desacuerdos.csv'), (val_fir, 'pbi_validacion_firmas.csv'),
                       (pca_barr, 'pbi_pca_barrido.csv'), (pca_cargas, 'pbi_pca_cargas.csv'),
                       (pca_det, 'pbi_pca_deteccion.csv'), (pca_comp, 'pbi_pca_comparaciones.csv'),
-                      (pca_loc, 'pbi_pca_localizacion.csv'), (pca_delta, 'pbi_pca_delta.csv')]:
+                      (pca_loc, 'pbi_pca_localizacion.csv'), (pca_delta, 'pbi_pca_delta.csv'),
+                      (inicios_tipo, 'pbi_anticipacion_inicios_tipo.csv'),
+                      (prec_contexto, 'pbi_anticipacion_contexto.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)
