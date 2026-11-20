@@ -20,6 +20,7 @@ Entrada:  Dataframe - {EQUIPO}.csv (el crudo); {EQUIPO}_corte_split.json y {EQUI
 Salida:   01b_resumen_variables.csv, 01b_periodos_sugeridos.csv, 01b_dias_sospechosos.csv,
           01b_inconsistencias.csv (los días que el 01 anula por consistencia física),
           01b_lo_que_anula_el_01.csv (todo lo que el 01 va a anular, por criterio y variable),
+          01b_arranques.csv (cuánto demora cada variable en estabilizarse después de partir),
           01b_limpio_actual.csv, 01b_series_horarias.csv, 01b_revision.png
 """
 import os
@@ -90,7 +91,9 @@ for c in df.columns:
 df, TAG = lc.renombrar_columnas(df)
 VARS = [v for v in VARIABLES if v in df.columns]
 print(f'Crudo: {len(df):,} registros, {df.index.min()} a {df.index.max()}')
-df = df[df.CM > CORRIENTE_MIN]
+_andando = (df.CM > CORRIENTE_MIN).to_numpy()
+PAROS = (df.CM <= CORRIENTE_MIN).cumsum().to_numpy()[_andando]   # registros detenidos hasta cada uno (sección 1b)
+df = df[_andando]
 print(f'Con el chancador andando (CM > {CORRIENTE_MIN}): {len(df):,} registros')
 
 if os.path.exists(ARCHIVO_CORTE):
@@ -170,6 +173,71 @@ for f in res.itertuples():
         avisos.append(f'mismo valor durante {f.racha_constante_h:.0f} h seguidas (¿sensor pegado?)')
     if avisos:
         print(f'  {f.variable} ({f.tag_original}): ' + '; '.join(avisos))
+
+
+# =============================================================================
+# 1b. ARRANQUES: CUÁNTO DEMORA CADA VARIABLE EN ESTABILIZARSE DESPUÉS DE PARTIR
+# =============================================================================
+# Para el 01, una partida es el primer registro andando después de un hueco de más de
+# HUECO_PARTIDA_S. Aquí se miden solo las partidas reales (en el hueco hubo registros con el
+# chancador detenido, CM <= 25; un corte de datos no es una partida) que siguen andando al menos
+# 10 minutos. El nivel estable de cada variable es su mediana entre los minutos 8 y 10; el perfil es
+# la mediana, entre partidas, de cuánto se aleja de ese nivel cada 10 s. Se estabiliza cuando el
+# perfil deja de salirse más de una desviación robusta durante 20 s seguidos. Las variables rápidas
+# (corriente, nivel, presiones y vibraciones) fijan el margen del 01. Las temperaturas suben de a
+# poco después de una detención porque el aceite se enfría: eso es real, se informa y no se corta.
+RAPIDAS = ['CM', 'PI', 'PDF', 'PEL', 'V1', 'V2', 'V3', 'V4']
+print(f'\n1b. ARRANQUES (el paso 01 corta los primeros {lc.ARRANQUE_MIN:g} min después de cada partida)')
+_t = pd.Series(df.index)
+_partida = (_t.diff().dt.total_seconds().fillna(np.inf) > lc.HUECO_PARTIDA_S).to_numpy()
+_id = np.cumsum(_partida)
+_seg = (_t - _t.where(_partida).ffill()).dt.total_seconds().to_numpy()
+_real = _partida & np.r_[PAROS[:1] > 0, np.diff(PAROS) > 0]
+_dura = pd.Series(_seg).groupby(_id).transform('max').to_numpy()
+_es_real = pd.Series(_real).groupby(_id).transform('max').to_numpy().astype(bool)
+_en = (_seg <= 600) & (_dura >= 600) & _es_real
+_est = _en & (_seg >= 480)
+n_partidas = int((_real & _en).sum())
+print(f'  {int(_partida.sum()):,} huecos de más de {lc.HUECO_PARTIDA_S} s: {int(_real.sum()):,} son partidas reales '
+      f'(venía detenido) y {n_partidas:,} de ellas siguen 10 minutos andando')
+arranques = pd.DataFrame()
+if n_partidas >= 5:
+    _paso = (_seg[_en] // 10 * 10).astype(int)
+    filas = []
+    for v in VARS:
+        x = df[v].to_numpy(dtype=float)
+        estable = pd.Series(x[_est]).groupby(_id[_est]).median()
+        perfil = pd.Series(x[_en] - pd.Series(_id[_en]).map(estable).to_numpy()).groupby(_paso).median().abs()
+        tol = EST[v]['desv_robusta']
+        afuera = perfil > tol
+        fuera = afuera & afuera.shift(-1, fill_value=False)          # dos pasos seguidos: 20 s
+        filas.append({'variable': v, 'tipo': 'rápida' if v in RAPIDAS else 'temperatura', 'partidas': n_partidas,
+                      'segundos_hasta_estabilizarse': int(fuera[fuera].index.max() + 20) if fuera.any() else 0,
+                      'desvio_maximo': perfil.max(),
+                      'en_el_segundo': int(perfil.idxmax()) if perfil.notna().any() else np.nan,
+                      'tolerancia': tol})
+    arranques = pd.DataFrame(filas)
+    guardar(arranques.round(3), '01b_arranques.csv')
+    print(arranques[['variable', 'tipo', 'segundos_hasta_estabilizarse', 'desvio_maximo', 'en_el_segundo']]
+          .round(2).to_string(index=False))
+    margen = 60 * lc.ARRANQUE_MIN
+    lentas = arranques[(arranques.tipo == 'rápida') & (arranques.segundos_hasta_estabilizarse > margen)]
+    if len(lentas):
+        nuevo = int(np.ceil(lentas.segundos_hasta_estabilizarse.max() / 60))
+        pct_hoy = 100 * lc.tras_arranque(df).mean()
+        pct_nuevo = 100 * lc.tras_arranque(df, minutos=nuevo).mean()
+        print(f'  OJO: {", ".join(lentas.variable)} demora(n) más que el margen de {lc.ARRANQUE_MIN:g} min: conviene '
+              f'subir ARRANQUE_MIN en limpieza_config.py a {nuevo} min (anula el {pct_nuevo:.1f} % del registro, '
+              f'contra el {pct_hoy:.1f} % con {lc.ARRANQUE_MIN:g} min).')
+    else:
+        print(f'  Corriente, nivel, presiones y vibraciones se estabilizan dentro de los {lc.ARRANQUE_MIN:g} min '
+              'que corta el 01.')
+    tibias = arranques[(arranques.tipo == 'temperatura') & (arranques.segundos_hasta_estabilizarse > margen)]
+    if len(tibias):
+        print(f'  {", ".join(tibias.variable)}: sube(n) de a poco después de una detención, porque el aceite se '
+              'enfría. Es real: no se corta.')
+else:
+    print('  Muy pocas para medir el arranque.')
 
 
 # =============================================================================
