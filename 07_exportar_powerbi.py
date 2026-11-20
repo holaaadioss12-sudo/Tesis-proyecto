@@ -3,7 +3,7 @@
 =============================================================================
 PASO 07 — TABLAS PARA POWER BI (LOS TRES EQUIPOS EN UN SOLO LUGAR)
 =============================================================================
-Entrada:  salidas de los pasos 02b, 03a, 03b, 04, 04c, 04d, 04f, 04g, 05a, 05b, 05c, 06 y 06b de cada equipo,
+Entrada:  salidas de los pasos 01, 01b, 02b, 03a, 03b, 04, 04c, 04d, 04f, 04g, 04i, 05a, 05b, 05c, 06 y 06b de cada equipo,
           y del 04e y el 03a (k común) en la carpeta base
 Salida:   carpeta powerbi/ con un CSV por tema (separador ';' y coma decimal)
 """
@@ -72,6 +72,8 @@ eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [
 eleccion_k_res, val_ind, val_dist, val_acu, val_conf, val_des, val_fir = [], [], [], [], [], [], []
 pca_barr, pca_cargas, pca_det, pca_comp, pca_loc, pca_delta = [], [], [], [], [], []
 inicios_tipo, prec_contexto = [], []
+diag_tabla, diag_ven, diag_var, diag_res, diag_sint, diag_comb = [], [], [], [], [], []
+rev_res, rev_per, rev_series, rev_limpio, lim_apl = [], [], [], [], []
 
 for eq in EQUIPOS:
     r = carpeta(eq)
@@ -215,11 +217,23 @@ for eq in EQUIPOS:
                            (pca_cargas, '04h_pca_cargas.csv'), (pca_det, '04h_pca_deteccion.csv'),
                            (pca_comp, '04h_pca_comparaciones.csv'), (pca_loc, '04h_pca_localizacion.csv'),
                            (pca_delta, '04h_pca_delta.csv'), (inicios_tipo, '06_inicios_por_tipo.csv'),
-                           (prec_contexto, '06_precursores_contexto.csv')]:
+                           (prec_contexto, '06_precursores_contexto.csv'),
+                           (diag_tabla, '04i_tabla_sintomas.csv'), (diag_res, '04i_resumen.csv'),
+                           (diag_sint, '04i_sintomas.csv'), (diag_comb, '04i_combinaciones.csv'),
+                           (rev_res, '01b_resumen_variables.csv'), (rev_per, '01b_periodos_sugeridos.csv'),
+                           (rev_series, '01b_series_horarias.csv'), (rev_limpio, '01b_limpio_actual.csv'),
+                           (lim_apl, '01_limites_aplicados.csv')]:
         t = leer(f'{r}/{archivo}')
         if t is not None:
             t.insert(0, 'equipo', eq)
-            lista.append(t)
+            lista.append(t.drop(columns=['tag_original'], errors='ignore'))
+
+    # --- diagnóstico por ventana (04i), con la clave para relacionarlo con pbi_ventanas ---
+    for lista, archivo in [(diag_ven, '04i_ventanas.csv'), (diag_var, '04i_ventanas_variables.csv')]:
+        t = leer(f'{r}/{archivo}')
+        if t is not None:
+            t.insert(0, 'equipo', eq)
+            lista.append(con_clave(t))
 
 # --- transferencia entre equipos (04e, un archivo para los tres) --------
 transfer, transfer_var, medias_eq, k_comun = [], [], [], []
@@ -255,7 +269,13 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (pca_det, 'pbi_pca_deteccion.csv'), (pca_comp, 'pbi_pca_comparaciones.csv'),
                       (pca_loc, 'pbi_pca_localizacion.csv'), (pca_delta, 'pbi_pca_delta.csv'),
                       (inicios_tipo, 'pbi_anticipacion_inicios_tipo.csv'),
-                      (prec_contexto, 'pbi_anticipacion_contexto.csv')]:
+                      (prec_contexto, 'pbi_anticipacion_contexto.csv'),
+                      (diag_tabla, 'pbi_tabla_sintomas.csv'), (diag_ven, 'pbi_diagnostico_ventanas.csv'),
+                      (diag_var, 'pbi_diagnostico_variables.csv'), (diag_res, 'pbi_diagnostico_resumen.csv'),
+                      (diag_sint, 'pbi_diagnostico_sintomas.csv'), (diag_comb, 'pbi_diagnostico_combinaciones.csv'),
+                      (rev_res, 'pbi_revision_variables.csv'), (rev_per, 'pbi_revision_periodos.csv'),
+                      (rev_series, 'pbi_series_variables.csv'), (rev_limpio, 'pbi_revision_limpio.csv'),
+                      (lim_apl, 'pbi_limites_aplicados.csv')]:
     if lista:
         df = pd.DataFrame(lista) if isinstance(lista[0], dict) else pd.concat(lista, ignore_index=True)
         guardar(df, nombre)

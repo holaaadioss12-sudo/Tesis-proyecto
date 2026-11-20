@@ -3,8 +3,11 @@
 =============================================================================
 PASO 01 — PREPROCESAMIENTO
 =============================================================================
-Entrada:  Dataframe - CR010.csv   (el crudo del PI System, ~5M registros)
+Entrada:  Dataframe - CR010.csv   (el crudo del PI System, ~5M registros); limpieza_config.py
 Salida:   CR010_limpio.csv        (~1,18M registros, 14 variables)
+Atípicos (reunión del 20 de noviembre): primero se anulan los valores físicamente imposibles y
+los períodos en que un sensor midió mal (limpieza_config.py, revisados con el paso 01b); después,
+el filtro de N_DESV desviaciones (6), ajustado solo con entrenamiento y anclado a las reglas.
 """
 
 # --- Conectar al Drive (Colab) -----------------------------------------
@@ -22,6 +25,10 @@ if EQUIPO == 'CR010' and _os.path.isdir(f'{RUTA_BASE}/CR010'):
     RUTA_EQ = f'{RUTA_BASE}/CR010'     # CR010 en su subcarpeta, como en los demás pasos
 _os.makedirs(RUTA_EQ, exist_ok=True)
 print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
+import sys as _sys
+if RUTA_BASE not in _sys.path:
+    _sys.path.append(RUTA_BASE)
+import limpieza_config as lc        # límites físicos, N_DESV y períodos malos (pasos 01 y 01b)
 
 import re
 import numpy as np
@@ -279,7 +286,7 @@ print(f'  Guardado: {ARCHIVO_CORTE}')
 
 
 # =============================================================================
-# 5. FILTRO DE ATÍPICOS 4-SIGMA, ANCLADO A LOS UMBRALES DE LAS REGLAS
+# 5. ATÍPICOS: LÍMITES FÍSICOS, PERÍODOS MALOS Y FILTRO DE N_DESV SIGMA ANCLADO A LAS REGLAS
 # =============================================================================
 print('\n' + '=' * 70)
 print('5. FILTRO DE ATÍPICOS')
@@ -294,14 +301,14 @@ UMBRAL_REGLA_MAX = {
 }
 MULTIPLICADOR_ANCLA = 2
 
-print('Comprobación — tope 4σ vs. umbral de la regla más exigente:')
+print(f'Comprobación — tope {lc.N_DESV}σ vs. umbral de la regla más exigente:')
 for col, umbral_regla in UMBRAL_REGLA_MAX.items():
     if col not in df_limpio1.columns:
         continue
     media, std = df_limpio1[col].mean(), df_limpio1[col].std()
-    tope_4s = media + 4 * std
-    estado = 'FILTRO MÁS ESTRICTO QUE LA REGLA -> se ancla' if tope_4s < umbral_regla else 'OK'
-    print(f'  {col:4s}: tope 4σ={tope_4s:8.1f} | umbral regla={umbral_regla:5d} | '
+    tope = media + lc.N_DESV * std
+    estado = 'FILTRO MÁS ESTRICTO QUE LA REGLA -> se ancla' if tope < umbral_regla else 'OK'
+    print(f'  {col:4s}: tope {lc.N_DESV}σ={tope:8.1f} | umbral regla={umbral_regla:5d} | '
           f'máx real={df_limpio1[col].max():8.1f} | {estado}')
 
 
@@ -344,10 +351,17 @@ def filtrar_atipicos(df, variables, n_std=4, umbrales_regla=None, multiplicador=
 VARIABLES_A_FILTRAR = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
                        'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 
+# Primero lo imposible y lo que el sensor midió mal: así no infla la desviación del filtro
+df_limpio1, _anulados = lc.aplicar_limites(df_limpio1, EQUIPO)
+print('\nLímites físicos y períodos malos (limpieza_config.py):')
+print(_anulados.round(4).to_string(index=False) if len(_anulados) else '  nada que anular.')
+_anulados.to_csv(f'{RUTA_EQ}/01_limites_aplicados.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
+
 _pre_filtro_p5 = df_limpio1[[c for c in VARIABLES_A_FILTRAR
                              if c in df_limpio1.columns]].copy()
 
-df_limpio1 = filtrar_atipicos(df_limpio1, VARIABLES_A_FILTRAR, n_std=4,
+print(f'\nFiltro estadístico: media ± {lc.N_DESV} desviaciones (ajustadas con entrenamiento)')
+df_limpio1 = filtrar_atipicos(df_limpio1, VARIABLES_A_FILTRAR, n_std=lc.N_DESV,
                               umbrales_regla=UMBRAL_REGLA_MAX,
                               multiplicador=MULTIPLICADOR_ANCLA,
                               mask_train=es_train_01)
@@ -495,7 +509,7 @@ print('\n  Corte verificado: la desviacion es de '
       f'{100*_desvio:.1f} puntos, dentro de lo que los bordes de tramo permiten.')
 
 _f_prov = float((df_limpio.index <= T_TRAIN_PROV).mean())
-print(f'  El filtro 4 sigma se ajusto hasta el T_train provisional, que en el')
+print(f'  El filtro {lc.N_DESV} sigma se ajusto hasta el T_train provisional, que en el')
 print(f'  limpio final equivale al {100*_f_prov:.1f} % (definitivo: '
       f'{100*_f_tr:.1f} %).')
 if T_TRAIN_PROV > T_TRAIN:
@@ -513,10 +527,10 @@ def _limites_p5(mask):
     out = {}
     for c in _cols_p5:
         m, s = _b[c].mean(), _b[c].std()
-        sup = m + 4 * s
+        sup = m + lc.N_DESV * s
         if c in UMBRAL_REGLA_MAX:
             sup = max(sup, MULTIPLICADOR_ANCLA * UMBRAL_REGLA_MAX[c])
-        out[c] = (m - 4 * s, sup)
+        out[c] = (m - lc.N_DESV * s, sup)
     return out
 
 
@@ -536,7 +550,7 @@ for c in _cols_p5:
                                       / _rango, 2),
         'filas_que_cambian': int((at_p != at_d).sum())})
 _tabla_p5 = pd.DataFrame(_filas_p5)
-print('\nP5 -- limites del filtro 4 sigma: corte provisional vs definitivo')
+print(f'\nP5 -- limites del filtro {lc.N_DESV} sigma: corte provisional vs definitivo')
 print(_tabla_p5.to_string(index=False))
 _p5_max = float(_tabla_p5.cambio_max_pct_rango.max())
 _p5_filas = int(_tabla_p5.filas_que_cambian.sum())

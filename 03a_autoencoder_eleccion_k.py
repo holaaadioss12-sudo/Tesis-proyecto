@@ -15,6 +15,9 @@ Se corre por etapas y se retoma solo (lo ya entrenado no se repite):
   A. todos los k con SEMILLAS=42;
   B. SEMILLAS=42,7,2024 con los candidatos que imprime la etapa A;
   C. opcional: REDES=cnn_t,cnn_lstm con el k elegido.
+  D. opcional: REDES=lstm LATENTES=2,4,8,16, el autoencoder recurrente clásico (como el del
+     profesor): la ventana entera se resume en un vector de k números, sin eje de tiempo. Su k
+     no se compara con el del Transformer temporal, que guarda k números POR INSTANTE (60 × k).
 Una corrida que llegó al tope de épocas sin activar la parada temprana se repite con el
 tope actual (EPOCAS_MAX, 300 por defecto).
 Entrada:  {EQUIPO}_limpio.csv y {EQUIPO}_corte_split.json (paso 01)
@@ -80,7 +83,9 @@ PERCENTIL_UMBRAL = 95
 N_BOOT = 1000
 BLOQUE = 36                          # ventanas por bloque del bootstrap: 36 x 10 min = 6 h (como el 04c)
 EQUIPOS = ['CR009', 'CR010', 'CR011']
-COLOR = {'transformer_t': '#0F9ED5', 'cnn_t': '#E97132', 'cnn_lstm': '#196B24', REF: '#7F7F7F'}
+COLOR = {'transformer_t': '#0F9ED5', 'cnn_t': '#E97132', 'cnn_lstm': '#196B24', 'lstm': '#A02B93',
+         REF: '#7F7F7F'}
+LATENTE_VECTOR = {REF, 'lstm'}       # redes cuyo latente es un vector por ventana (sin eje de tiempo)
 VARIABLES = ['CM', 'PI', 'PDF', 'PEL', 'T7', 'T8', 'T9',
              'T1', 'T2', 'T5', 'V1', 'V2', 'V3', 'V4']
 FAMILIAS = {
@@ -321,8 +326,32 @@ class AECNNLSTM(nn.Module):
         return self.conv_out(self.drop(h).transpose(1, 2)).transpose(1, 2)   # (B, 60, 14)
 
 
+class AELSTM(nn.Module):
+    """Autoencoder LSTM clásico (Malhotra et al., 2016), como el del profesor: el codificador
+    recorre los 60 instantes y su último estado se comprime a k números; el decodificador repite
+    ese vector en los 60 instantes y reconstruye la ventana. El latente es un vector por ventana."""
+    def __init__(self, n_vars, W, k, oculto=64, dropout=0.1):
+        super().__init__()
+        self.W = W
+        self.lstm_enc = nn.LSTM(n_vars, oculto, batch_first=True)
+        self.a_latente = nn.Linear(oculto, k)                  # cuello de botella: 64 -> k
+        self.desde_latente = nn.Linear(k, oculto)
+        self.lstm_dec = nn.LSTM(oculto, oculto, batch_first=True)
+        self.drop = nn.Dropout(dropout)
+        self.salida = nn.Linear(oculto, n_vars)
+
+    def encode(self, x):                                       # (B, 60, 14)
+        _, (h, _) = self.lstm_enc(x)                           # h: (1, B, 64), el estado al final
+        return self.a_latente(self.drop(h[-1]))                # (B, k)
+
+    def forward(self, x):
+        z = self.desde_latente(self.encode(x)).unsqueeze(1).repeat(1, self.W, 1)   # (B, 60, 64)
+        h, _ = self.lstm_dec(z)
+        return self.salida(self.drop(h))                       # (B, 60, 14)
+
+
 CLASES = {'transformer': AETransformer, 'transformer_t': AETransformerT,
-          'cnn_t': AECNNT, 'cnn_lstm': AECNNLSTM}
+          'cnn_t': AECNNT, 'cnn_lstm': AECNNLSTM, 'lstm': AELSTM}
 
 
 def crear(red, k):
@@ -454,9 +483,9 @@ def entrenar(red, k, semilla):
     ev_va, ev_te = errores_por_variable(modelo, X_va), errores_por_variable(modelo, X_te)
     return modelo, ev_va, ev_te, {
         'red': red, 'latent_dim': k, 'semilla': semilla,
-        'forma_latente': f'({k})' if red == REF else f'(60, {k})',
-        'numeros_latente': k if red == REF else W * k,
-        'compresion': round(W * N_VARS / (k if red == REF else W * k), 2),
+        'forma_latente': f'({k})' if red in LATENTE_VECTOR else f'(60, {k})',
+        'numeros_latente': k if red in LATENTE_VECTOR else W * k,
+        'compresion': round(W * N_VARS / (k if red in LATENTE_VECTOR else W * k), 2),
         'parametros': sum(p.numel() for p in modelo.parameters()),
         'epocas_corridas': ep, 'mejor_epoca': mejor_epoca, 'epocas_max': EPOCAS_MAX,
         'convergio': ep - mejor_epoca >= PACIENCIA,
