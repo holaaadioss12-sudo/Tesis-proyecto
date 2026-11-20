@@ -34,13 +34,18 @@ N_DESV = 6
 # llega a 100 °C y el metal (buje, socket liner, contraeje) no pasa de 130 °C.
 LIMITES_FISICOS = {
     'CM':  (0, 150),     # % de la corriente nominal (alarmas en 100 y 110)
-    'PI':  (0, 100),     # % de nivel de la cámara
+    'PI':  (-1, 126),    # % de nivel de la cámara (ver abajo)
     'PDF': (0, 1000),    # kPa (alarma en 400)
     'PEL': (0, 1000),    # kPa (alarmas en 150, 350 y 450)
     'T7':  (2, 130), 'T8': (2, 130), 'T9': (2, 130),     # °C, metal
     'T1':  (2, 100), 'T2': (2, 100), 'T5': (2, 100),     # °C, aceite
     'V1':  (0, 100), 'V2': (0, 100), 'V3': (0, 100), 'V4': (0, 100),   # mm/s (alarmas hasta 40)
 }
+# El nivel no se corta en 100 %: el sensor mide hasta 125 % (los tres equipos topan ahí) y sobre
+# 100 % los valores se reparten hasta ese tope, no quedan pegados en uno solo. Es la cámara más
+# llena que su 100 % de calibración, no un error, y cortarlo botaba el 4,4 % de CR010 justo en
+# los tramos de nivel alto (los de la alarma de atollo). Bajo 0 hay solo ruido de centésimas
+# con la cámara vacía.
 
 # --- 2. sensor pegado: el mismo valor exacto durante horas no es una medición -----------------
 PEGADO_HORAS = 6.0
@@ -66,8 +71,12 @@ CONSISTENCIA = {'referencia': 'T2', 'variables': ['T7', 'T8', 'T9'], 'margen': 5
 
 # --- 5. arranques: se descartan los primeros minutos después de cada partida -----------------
 # Una partida es el primer registro con el chancador andando después de un hueco de más de
-# HUECO_PARTIDA_S segundos (una parada, o datos que faltan).
-ARRANQUE_MIN = 2.0
+# HUECO_PARTIDA_S segundos (una parada, o datos que faltan). El margen se midió con el paso 01b
+# (sección 1b, más de mil partidas por equipo). Con registros cada 10 s la corriente no muestra
+# pico de partida, pero la presión de entrada del aceite parte entre 57 y 188 kPa sobre su nivel
+# y demora 230, 350 y 180 s en volver (CR009, CR010 y CR011). Con 6 minutos, las 14 variables
+# de los tres equipos ya están en su nivel: la más lenta demora 350 s.
+ARRANQUE_MIN = 6.0
 HUECO_PARTIDA_S = 60
 
 # --- 6. períodos en que un sensor midió mal: se anula esa variable en ese período --------------
