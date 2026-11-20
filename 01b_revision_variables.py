@@ -47,7 +47,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+import importlib
 import limpieza_config as lc
+lc = importlib.reload(lc)        # Colab guarda los módulos ya importados: así lee siempre el último
 
 ARCHIVO_CRUDO = f'{RUTA_BASE}/Dataframe - {EQUIPO}.csv'
 ARCHIVO_CORTE = f'{RUTA_EQ}/{EQUIPO}_corte_split.json'

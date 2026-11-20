@@ -28,7 +28,9 @@ print(f'Equipo: {EQUIPO} | carpeta de trabajo: {RUTA_EQ}')
 import sys as _sys
 if RUTA_BASE not in _sys.path:
     _sys.path.append(RUTA_BASE)
+import importlib as _importlib
 import limpieza_config as lc        # límites físicos, N_DESV y períodos malos (pasos 01 y 01b)
+lc = _importlib.reload(lc)          # Colab guarda los módulos ya importados: así lee siempre el último
 
 import re
 import numpy as np
