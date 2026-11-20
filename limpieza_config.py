@@ -30,19 +30,50 @@ LIMITES_FISICOS = {
     'V1':  (0, 100), 'V2': (0, 100), 'V3': (0, 100), 'V4': (0, 100),   # mm/s (alarmas hasta 40)
 }
 
+# --- consistencia física: el metal no puede estar más frío que el aceite que lo enfría ---------
+# El aceite entra al chancador (T2) y enfría el metal: el buje excéntrico (T7), el socket liner
+# (T8) y el contraeje (T9) no pueden quedar, en la mediana de un día con el chancador andando,
+# más de MARGEN °C bajo el aceite de entrada. Si además la variable se corrió de su propio nivel
+# (z de la mediana del día bajo -Z), es una falla del sensor, como T8 de CR009 en enero de 2023
+# (26,8 °C con el aceite entrando a 39 °C), y se anula esa variable ese día.
+CONSISTENCIA = {'referencia': 'T2', 'variables': ['T7', 'T8', 'T9'], 'margen': 5.0, 'z': 3.0}
+
 # --- períodos en que un sensor midió mal: se anula esa variable en ese período --------------
-# (equipo, variable, desde, hasta, motivo). Se llena después de revisar el paso 01b con el
-# profesor. Las filas que quedan sin esa variable se botan en el paso 01, como cualquier hueco
-# largo, porque el autoencoder necesita las 14 variables.
+# (equipo, variable, desde, hasta, motivo), para lo que la regla de consistencia no ve y se
+# decida cortar al revisar el paso 01b. Las filas que quedan sin esa variable se botan en el
+# paso 01, como cualquier hueco largo, porque el autoencoder necesita las 14 variables.
 PERIODOS_MALOS = [
-    # ('CR009', 'T8', '2023-01-01', '2023-01-31 23:59:59',
-    #  'T8 unos 12 °C bajo el aceite de entrada: falla del sensor, por confirmar'),
 ]
 
 
-def aplicar_limites(df, equipo, limites=None, periodos=None):
-    """Anula los valores fuera de los límites físicos y los de los períodos malos del equipo.
-    Devuelve el df corregido y una tabla con lo anulado por variable."""
+def dias_inconsistentes(df, cfg=None):
+    """Días en que una temperatura de metal quedó bajo el aceite de entrada y corrida de su nivel."""
+    cfg = CONSISTENCIA if cfg is None else cfg
+    if not cfg or cfg.get('referencia') not in df.columns:
+        return pd.DataFrame(columns=['variable', 'dia', 'mediana', 'mediana_referencia', 'diferencia', 'z'])
+    ref = cfg['referencia']
+    dia = df.index.normalize()
+    med_ref = df[ref].groupby(dia).median()
+    filas = []
+    for v in cfg['variables']:
+        if v not in df.columns:
+            continue
+        med = df[v].groupby(dia).median().dropna()
+        centro = med.median()
+        escala = 1.4826 * (med - centro).abs().median()
+        escala = escala if escala > 0 else med.std()
+        z = (med - centro) / escala
+        dif = med - med_ref.reindex(med.index)
+        malo = (dif < -cfg['margen']) & (z < -cfg['z'])
+        for d in med.index[malo.fillna(False).to_numpy()]:
+            filas.append({'variable': v, 'dia': d, 'mediana': med[d], 'mediana_referencia': med_ref[d],
+                          'diferencia': dif[d], 'z': z[d]})
+    return pd.DataFrame(filas, columns=['variable', 'dia', 'mediana', 'mediana_referencia', 'diferencia', 'z'])
+
+
+def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None):
+    """Anula los valores fuera de los límites físicos, los días que fallan la consistencia física y
+    los períodos malos del equipo. Devuelve el df corregido y una tabla con lo anulado."""
     limites = LIMITES_FISICOS if limites is None else limites
     periodos = PERIODOS_MALOS if periodos is None else periodos
     df = df.copy()
@@ -56,6 +87,17 @@ def aplicar_limites(df, equipo, limites=None, periodos=None):
                       'bajo_el_minimo': int(bajo.sum()), 'sobre_el_maximo': int(alto.sum()),
                       'pct_anulado': 100 * float((bajo | alto).mean())})
         df.loc[bajo | alto, col] = np.nan
+    cfg = CONSISTENCIA if consistencia is None else consistencia
+    malos = dias_inconsistentes(df, cfg)
+    if len(malos):
+        dia = df.index.normalize()
+        for v, g in malos.groupby('variable'):
+            en = dia.isin(g.dia)
+            filas.append({'variable': v, 'periodo': f'{len(g)} días entre {g.dia.min().date()} y {g.dia.max().date()}',
+                          'motivo': f'más de {cfg["margen"]:.0f} °C bajo el aceite de entrada ({cfg["referencia"]}) y '
+                                    'corrida de su nivel: falla del sensor',
+                          'anulados_por_consistencia': int(df.loc[en, v].notna().sum())})
+            df.loc[en, v] = np.nan
     for eq, col, desde, hasta, motivo in periodos:
         if eq != equipo or col not in df.columns:
             continue

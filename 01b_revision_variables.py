@@ -18,6 +18,7 @@ Nada se borra aquí: lo que se decida cortar se anota en limpieza_config.py y se
 Entrada:  Dataframe - {EQUIPO}.csv (el crudo); {EQUIPO}_corte_split.json y {EQUIPO}_limpio.csv
           (paso 01, opcionales); limpieza_config.py
 Salida:   01b_resumen_variables.csv, 01b_periodos_sugeridos.csv, 01b_dias_sospechosos.csv,
+          01b_inconsistencias.csv (los días que el 01 anula por consistencia física),
           01b_limpio_actual.csv, 01b_series_horarias.csv, 01b_revision.png
 """
 import os
@@ -203,6 +204,20 @@ for v in VARS:
                          'mediana_del_periodo': p.mediana.median(), 'mediana_entrenamiento': e['mediana'],
                          'z_mediana': p.z_mediana.median(),
                          'pct_fuera_fisico': p.pct_fuera_fisico.mean(), 'pct_fuera_6desv': p.pct_fuera_6desv.mean()})
+# días que el paso 01 va a anular por la regla de consistencia (metal más frío que el aceite)
+_con_limites, _ = lc.aplicar_limites(df[VARS], EQUIPO, periodos=[], consistencia={})
+inc = lc.dias_inconsistentes(_con_limites)
+guardar(inc.round(3), '01b_inconsistencias.csv')
+for v, g in inc.groupby('variable'):
+    g = g.sort_values('dia')
+    for _, p in g.groupby((g.dia.diff().dt.days > 2).cumsum()):
+        periodos.append({'variable': v, 'descripcion': DESCRIPCION[v], 'desde': pd.Timestamp(p.dia.min()),
+                         'hasta': pd.Timestamp(p.dia.max()).replace(hour=23, minute=59, second=59), 'dias': len(p),
+                         'conjunto': '/'.join(dict.fromkeys(conjunto_de(p.dia))),
+                         'motivos': f'bajo el aceite de entrada ({lc.CONSISTENCIA["referencia"]}): se anula en el 01',
+                         'mediana_del_periodo': p.mediana.median(), 'mediana_entrenamiento': EST[v]['mediana'],
+                         'z_mediana': (p.mediana.median() - EST[v]['mediana']) / EST[v]['desv_robusta'],
+                         'pct_fuera_fisico': np.nan, 'pct_fuera_6desv': np.nan})
 dias = pd.concat(dias, ignore_index=True) if dias else pd.DataFrame()
 per = pd.DataFrame(periodos)
 if len(per):
@@ -212,7 +227,8 @@ guardar(per.round(3), '01b_periodos_sugeridos.csv')
 if len(per):
     print(per.head(20)[['variable', 'desde', 'hasta', 'dias', 'conjunto', 'motivos', 'mediana_del_periodo',
                         'mediana_entrenamiento', 'z_mediana']].round(2).to_string(index=False))
-    print('  Para cortar uno, cópialo en PERIODOS_MALOS de limpieza_config.py, con su motivo, y corre el 01.')
+    print('  Los que dicen "se anula en el 01" los corta solo la regla de consistencia. Para cortar otro,')
+    print('  cópialo en PERIODOS_MALOS de limpieza_config.py, con su motivo, y corre el 01.')
 else:
     print('  Ningún día fuera de lo normal con estos criterios.')
 
