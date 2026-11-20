@@ -19,6 +19,7 @@ Entrada:  Dataframe - {EQUIPO}.csv (el crudo); {EQUIPO}_corte_split.json y {EQUI
           (paso 01, opcionales); limpieza_config.py
 Salida:   01b_resumen_variables.csv, 01b_periodos_sugeridos.csv, 01b_dias_sospechosos.csv,
           01b_inconsistencias.csv (los días que el 01 anula por consistencia física),
+          01b_lo_que_anula_el_01.csv (todo lo que el 01 va a anular, por criterio y variable),
           01b_limpio_actual.csv, 01b_series_horarias.csv, 01b_revision.png
 """
 import os
@@ -206,9 +207,10 @@ for v in VARS:
                          'mediana_del_periodo': p.mediana.median(), 'mediana_entrenamiento': e['mediana'],
                          'z_mediana': p.z_mediana.median(),
                          'pct_fuera_fisico': p.pct_fuera_fisico.mean(), 'pct_fuera_6desv': p.pct_fuera_6desv.mean()})
-# días que el paso 01 va a anular por la regla de consistencia (metal más frío que el aceite)
-_con_limites, _ = lc.aplicar_limites(df[VARS], EQUIPO, periodos=[], consistencia={})
-inc = lc.dias_inconsistentes(_con_limites)
+# lo que el paso 01 va a anular, con los mismos seis criterios de limpieza_config.py
+_prev, ANULA = lc.aplicar_limites(df[VARS], EQUIPO)
+inc = ANULA.attrs['dias_inconsistentes']
+guardar(ANULA.round(4), '01b_lo_que_anula_el_01.csv')
 guardar(inc.round(3), '01b_inconsistencias.csv')
 for v, g in inc.groupby('variable'):
     g = g.sort_values('dia')
@@ -233,6 +235,9 @@ if len(per):
     print('  cópialo en PERIODOS_MALOS de limpieza_config.py, con su motivo, y corre el 01.')
 else:
     print('  Ningún día fuera de lo normal con estos criterios.')
+print('\n2b. LO QUE EL PASO 01 VA A ANULAR (límites físicos, sensores pegados, picos aislados, consistencia,')
+print('    arranques y períodos malos de limpieza_config.py)')
+print(ANULA.round(3).to_string(index=False) if len(ANULA) else '  nada.')
 
 
 # =============================================================================
@@ -251,6 +256,8 @@ if os.path.exists(ARCHIVO_LIMPIO):
         z = (dmed - e['mediana']) / e['desv_robusta']
         filas.append({'variable': v, 'minimo': x.min(), 'maximo': x.max(),
                       'fuera_fisico': int(((x < e['lo_f']) | (x > e['hi_f'])).sum()),
+                      'picos_que_quedan': int(lc.picos_aislados(_l[[v]]).get(v, np.zeros(1, bool)).sum()),
+                      'pegados_que_quedan': int(lc.sensores_pegados(_l[[v]], variables=[v]).get(v, np.zeros(1, bool)).sum()),
                       'fuera_6desv': int(((x < e['media'] - 6 * e['desv']) | (x > e['media'] + 6 * e['desv'])).sum()),
                       'dias_nivel_corrido': int((z.abs() > DIA_Z).sum()),
                       'peor_dia': z.abs().idxmax().date() if len(z) else None,

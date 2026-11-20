@@ -410,7 +410,12 @@ def limpieza_etapa2(df, vars_no_negativas=None, vars_interpolables=None, limites
     for col in vars_interpolables:
         if col in df.columns:
             limite = limites_interpolacion.get(col, 5)
-            df[col] = df[col].interpolate(method='linear', limit=limite)
+            # solo los huecos de hasta 'limite' registros: en un hueco largo (un sensor anulado por
+            # horas o días) interpolate(limit=...) igual inventaría sus primeros valores
+            nulo = df[col].isna()
+            largo = nulo.groupby((nulo != nulo.shift()).cumsum()).transform('sum')
+            relleno = df[col].interpolate(method='linear', limit_area='inside')
+            df[col] = df[col].where(~nulo | (largo > limite), relleno)
 
     return df.dropna()
 
