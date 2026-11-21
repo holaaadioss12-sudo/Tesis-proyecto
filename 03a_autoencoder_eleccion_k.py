@@ -19,7 +19,8 @@ Se corre por etapas y se retoma solo (lo ya entrenado no se repite):
      profesor): la ventana entera se resume en un vector de k números, sin eje de tiempo. Su k
      no se compara con el del Transformer temporal, que guarda k números POR INSTANTE (60 × k).
 Una corrida que llegó al tope de épocas sin activar la parada temprana se repite con el
-tope actual (EPOCAS_MAX, 300 por defecto).
+tope actual (EPOCAS_MAX, 300 por defecto). Una corrida guardada con otras ventanas (por ejemplo,
+de antes de cambiar la limpieza del paso 01) también se repite: no se mezclan datos distintos.
 Entrada:  {EQUIPO}_limpio.csv y {EQUIPO}_corte_split.json (paso 01)
 Salida:   03a_latente_temporal.csv (una fila por corrida), 03a_eleccion.csv (una fila por red y k,
           con la decisión), 03a_barrido.png, 03a_resumen.csv (contra el modelo anterior),
@@ -524,11 +525,17 @@ for red, k, semilla in CORRIDAS:
               if len(hechas) else hechas)
     if len(previa) and os.path.exists(f'{CARPETA_ERRORES}/{clave}.npz'):
         p = previa.iloc[-1]
-        if convergio(p) or p.epocas_corridas >= EPOCAS_MAX:
+        _z = np.load(f'{CARPETA_ERRORES}/{clave}.npz')
+        calza = len(_z['ev_va']) == len(X_va) and len(_z['ev_te']) == len(X_te)
+        if not calza:
+            # mismo corte, pero otras ventanas: se entrenó con los datos de antes de la limpieza
+            print(f'[repite] {clave}: se entrenó con otras ventanas (otros datos limpios); se entrena de nuevo.')
+        elif convergio(p) or p.epocas_corridas >= EPOCAS_MAX:
             print(f'[salto] {clave}')
             continue
-        print(f'[repite] {clave}: llegó al tope de {int(p.epocas_corridas)} épocas sin activar la parada '
-              f'temprana; se entrena de nuevo con tope {EPOCAS_MAX}.')
+        else:
+            print(f'[repite] {clave}: llegó al tope de {int(p.epocas_corridas)} épocas sin activar la parada '
+                  f'temprana; se entrena de nuevo con tope {EPOCAS_MAX}.')
     print(f'\n--- {red} · latent_dim {k} · semilla {semilla} ---')
     modelo, ev_va, ev_te, info = entrenar(red, k, semilla)
     torch.save(modelo.state_dict(), f'{CARPETA_MODELOS}/{clave}.pt')
