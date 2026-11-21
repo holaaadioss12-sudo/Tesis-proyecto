@@ -380,11 +380,19 @@ historial = {'train': [], 'val_normal': [], 'err_norm': [], 'err_anom': [],
              'razon': [], 'auc': []}
 epoca_inicial, terminado = 1, False
 
-# si una corrida anterior se cortó, se retoma desde la última época guardada
-_config_actual = {'tipo': TIPO_AE, 'latent_dim': LATENT_DIM}
+# si una corrida anterior se cortó, se retoma desde la última época guardada. La huella de los datos
+# (cuántas ventanas hay y la media de cada variable en entrenamiento) evita retomar o reutilizar un
+# entrenamiento hecho con otros datos: si cambia la limpieza o el corte, se entrena de cero.
+_huella = {'ventanas': [int(len(X_train_normal)), int(len(X_val_normal)), int(len(X_val)), int(len(X_test))],
+           'media': [round(float(v), 4) if np.isfinite(v) else None for v in params_norm['media'].to_numpy()]}
+_config_actual = {'tipo': TIPO_AE, 'latent_dim': LATENT_DIM, 'datos': _huella}
 if _os.path.exists(RUTA_ESTADO) and not REENTRENAR:
     _est = torch.load(RUTA_ESTADO, map_location=device, weights_only=False)
-    if _est['config'] == _config_actual:
+    _cfg = _est.get('config', {})
+    _misma_red = _cfg.get('tipo') == TIPO_AE and _cfg.get('latent_dim') == LATENT_DIM
+    if _misma_red and _cfg.get('datos') != _huella:
+        print('\nHay un entrenamiento guardado con otros datos (otra limpieza o corte): se empieza de cero.')
+    elif _cfg == _config_actual:
         modelo.load_state_dict(_est['modelo'])
         optimizador.load_state_dict(_est['optimizador'])
         mejor_val, mejor_separacion = _est['mejor_val'], _est['mejor_separacion']
@@ -398,7 +406,8 @@ if _os.path.exists(RUTA_ESTADO) and not REENTRENAR:
               + ('ya había terminado, no se repite.' if terminado or epoca_inicial > EPOCHS_MAX
                  else f'se retoma desde la época {epoca_inicial}.'))
     else:
-        print(f'\nHay un entrenamiento guardado con otra configuración ({_est["config"]}): se empieza de cero.')
+        print(f'\nHay un entrenamiento guardado con otra configuración (tipo {_cfg.get("tipo")}, '
+              f'latent_dim {_cfg.get("latent_dim")}): se empieza de cero.')
 
 for epoch in range(epoca_inicial, EPOCHS_MAX + 1):
     if terminado:
