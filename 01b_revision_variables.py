@@ -12,7 +12,11 @@ Sobre el crudo, con el chancador andando (CM > 25, como el paso 01):
      valor (sensor pegado).
   2. Por día: % fuera de los límites, % fuera de 6 desviaciones y cuánto se aleja la mediana
      del día de la de entrenamiento. Los días que fallan se juntan en períodos sugeridos.
-  3. Si ya existe el limpio del paso 01: qué dejó pasar la limpieza actual.
+  2b. Lo que el paso 01 va a anular, en una tabla de variable por criterio (01b_matriz_limpieza):
+     que cada una de las 14 variables pasó por todos los criterios que le corresponden.
+  3. Si ya existe el limpio del paso 01: qué dejó pasar la limpieza actual, revisado con los
+     mismos criterios, y los días con los valores más altos y más bajos de cada variable, para
+     mirarlos en Power BI.
   4. La serie horaria de cada variable (mínimo, mediana y máximo), para verla en Power BI.
 Nada se borra aquí: lo que se decida cortar se anota en limpieza_config.py y se corre el 01.
 Entrada:  Dataframe - {EQUIPO}.csv (el crudo); {EQUIPO}_corte_split.json y {EQUIPO}_limpio.csv
@@ -21,8 +25,9 @@ Salida:   01b_resumen_variables.csv, 01b_periodos_sugeridos.csv, 01b_dias_sospec
           01b_inconsistencias.csv (los días que el 01 anula por consistencia física),
           01b_lo_que_anula_el_01.csv (todo lo que el 01 va a anular, por criterio y variable),
           01b_saltos.csv (los episodios de saltos imposibles de temperatura, con fecha y conjunto),
+          01b_matriz_limpieza.csv (% anulado de cada variable por cada criterio),
           01b_arranques.csv (cuánto demora cada variable en estabilizarse después de partir),
-          01b_limpio_actual.csv, 01b_series_horarias.csv, 01b_revision.png
+          01b_limpio_actual.csv, 01b_extremos_del_limpio.csv, 01b_series_horarias.csv, 01b_revision.png
 """
 import os
 import sys
@@ -117,12 +122,13 @@ tr = df.index <= T_TRAIN
 # 1. RESUMEN POR VARIABLE
 # =============================================================================
 def racha_constante_h(s):
-    """La racha más larga (en horas) con exactamente el mismo valor: sensor pegado."""
+    """La racha más larga (en horas) con exactamente el mismo valor y el chancador andando sin parar
+    (un hueco de más de HUECO_PARTIDA_S corta la racha, como en el criterio 2)."""
     s = s.dropna()
     if len(s) < 2:
         return 0.0
-    grupo = s.ne(s.shift()).cumsum()
     t = s.index.to_series()
+    grupo = (s.ne(s.shift()) | (t.diff().dt.total_seconds() > lc.HUECO_PARTIDA_S)).cumsum()
     dur = t.groupby(grupo.to_numpy()).agg(['min', 'max'])
     return float((dur['max'] - dur['min']).dt.total_seconds().max() / 3600)
 
@@ -170,8 +176,8 @@ for f in res.itertuples():
     if f.bajo_el_minimo_fisico and f.lim_inf_6desv < lc.LIMITES_FISICOS[f.variable][0]:
         avisos.append(f'6 desviaciones no alcanzan a cortar lo imposible (límite inferior {f.lim_inf_6desv:.1f}): '
                       'ahí manda el límite físico')
-    if f.racha_constante_h >= 6:
-        avisos.append(f'mismo valor durante {f.racha_constante_h:.0f} h seguidas (¿sensor pegado?)')
+    if f.racha_constante_h >= lc.PEGADO_MIN / 60:
+        avisos.append(f'mismo valor durante {60 * f.racha_constante_h:.0f} min seguidos: sensor pegado, lo corta el 01')
     if avisos:
         print(f'  {f.variable} ({f.tag_original}): ' + '; '.join(avisos))
 
@@ -290,7 +296,8 @@ for v, g in inc.groupby('variable'):
         periodos.append({'variable': v, 'descripcion': DESCRIPCION[v], 'desde': pd.Timestamp(p.dia.min()),
                          'hasta': pd.Timestamp(p.dia.max()).replace(hour=23, minute=59, second=59), 'dias': len(p),
                          'conjunto': '/'.join(dict.fromkeys(conjunto_de(p.dia))),
-                         'motivos': f'bajo el aceite de entrada ({lc.CONSISTENCIA["referencia"]}): se anula en el 01',
+                         'motivos': '; '.join(dict.fromkeys(m for x in p.motivo for m in x.split('; ')))
+                                    + ': se anula en el 01',
                          'mediana_del_periodo': p.mediana.median(), 'mediana_entrenamiento': EST[v]['mediana'],
                          'z_mediana': (p.mediana.median() - EST[v]['mediana']) / EST[v]['desv_robusta'],
                          'pct_fuera_fisico': np.nan, 'pct_fuera_6desv': np.nan})
@@ -310,6 +317,25 @@ else:
 print('\n2b. LO QUE EL PASO 01 VA A ANULAR (límites físicos, sensores pegados, picos aislados, saltos imposibles,')
 print('    consistencia, arranques y períodos malos de limpieza_config.py)')
 print(ANULA.round(3).to_string(index=False) if len(ANULA) else '  nada.')
+MATRIZ = (ANULA.pivot_table(index='variable', columns='criterio', values='pct_del_registro', aggfunc='sum')
+          .reindex(index=VARS).fillna(0.0) if len(ANULA) else pd.DataFrame(index=VARS))
+MATRIZ['total_sin_arranques'] = MATRIZ.drop(columns=[c for c in MATRIZ.columns if c.startswith('5.')]).sum(axis=1)
+guardar(MATRIZ.round(4).reset_index(names='variable'), '01b_matriz_limpieza.csv')
+print('\n    Lo mismo, como % del registro de cada variable (cada fila es una variable; 0 = el criterio la revisó')
+print('    y no encontró nada; en blanco = el criterio no se aplica a esa variable):')
+_aplica = {'1. límite físico': set(lc.LIMITES_FISICOS), '2. sensor pegado': set(lc.VARIABLES),
+           '3. pico aislado': set(lc.PICOS['variables']), '3b. salto imposible': set(lc.SALTOS['variables']),
+           '4. consistencia física': {r[0] for r in lc.CONSISTENCIA['reglas']}, '5. arranque': set(lc.VARIABLES),
+           '6. período malo': set(lc.VARIABLES)}
+_m = MATRIZ.copy()
+for c in _aplica:
+    if c not in _m.columns:
+        _m[c] = 0.0
+_m = _m[list(_aplica) + ['total_sin_arranques']].astype(object)
+for c, vs in _aplica.items():
+    _m[c] = [f'{x:.3f}' if v in vs else '' for v, x in zip(_m.index, MATRIZ.get(c, pd.Series(0.0, index=_m.index)))]
+_m['total_sin_arranques'] = [f'{x:.3f}' for x in MATRIZ['total_sin_arranques']]
+print(_m.to_string())
 if len(SALTOS):
     print(f'\n    Saltos imposibles (más de {lc.SALTOS["max_c_min"]:g} °C en un minuto), uno por episodio:')
     print(SALTOS.round(1).to_string(index=False))
@@ -324,23 +350,47 @@ if os.path.exists(ARCHIVO_LIMPIO):
     _l = pd.read_csv(ARCHIVO_LIMPIO, low_memory=False)
     _t = 'timestamp' if 'timestamp' in _l.columns else _l.columns[0]
     _l = _l.set_index(pd.to_datetime(_l[_t])).sort_index()
-    filas = []
-    for v in [x for x in VARS if x in _l.columns]:
+    _VL = [x for x in VARS if x in _l.columns]
+    _picos = lc.picos_aislados(_l[_VL])
+    _pegados = lc.sensores_pegados(_l[_VL], variables=_VL)
+    _saltos = lc.saltos_imposibles(_l[_VL])[0]
+    _incons = lc.dias_inconsistentes(_l[_VL])
+    _nada = np.zeros(len(_l), dtype=bool)
+    filas, extremos = [], []
+    for v in _VL:
         e, x = EST[v], _l[v]
         dmed = x.groupby(x.index.normalize()).median()
         z = (dmed - e['mediana']) / e['desv_robusta']
         filas.append({'variable': v, 'minimo': x.min(), 'maximo': x.max(),
                       'fuera_fisico': int(((x < e['lo_f']) | (x > e['hi_f'])).sum()),
-                      'picos_que_quedan': int(lc.picos_aislados(_l[[v]]).get(v, np.zeros(1, bool)).sum()),
-                      'pegados_que_quedan': int(lc.sensores_pegados(_l[[v]], variables=[v]).get(v, np.zeros(1, bool)).sum()),
-                      'saltos_que_quedan': int(lc.saltos_imposibles(_l[[v]])[0].get(v, np.zeros(1, bool)).sum()),
+                      'picos_que_quedan': int(_picos.get(v, _nada).sum()),
+                      'pegados_que_quedan': int(_pegados.get(v, _nada).sum()),
+                      'saltos_que_quedan': int(_saltos.get(v, _nada).sum()),
+                      'dias_inconsistentes_que_quedan': int((_incons.variable == v).sum()),
                       'fuera_6desv': int(((x < e['media'] - 6 * e['desv']) | (x > e['media'] + 6 * e['desv'])).sum()),
                       'dias_nivel_corrido': int((z.abs() > DIA_Z).sum()),
                       'peor_dia': z.abs().idxmax().date() if len(z) else None,
                       'z_peor_dia': z.loc[z.abs().idxmax()] if len(z) else np.nan})
+        # los 3 días con el valor más alto y los 3 con el más bajo: lo primero que hay que mirar en Power BI
+        xd = x.dropna()
+        if len(xd):
+            dia_x = xd.groupby(xd.index.normalize())
+            for cual, serie, idx in [('máximo', dia_x.max().nlargest(3), dia_x.idxmax()),
+                                     ('mínimo', dia_x.min().nsmallest(3), dia_x.idxmin())]:
+                for d, val in serie.items():
+                    extremos.append({'variable': v, 'extremo': cual, 'dia': d.date(), 'momento': idx[d], 'valor': val,
+                                     'mediana_entrenamiento': e['mediana'], 'conjunto': conjunto_de(pd.DatetimeIndex([d]))[0]})
     lim = pd.DataFrame(filas)
     guardar(lim.round(3), '01b_limpio_actual.csv')
     print(lim.round(2).to_string(index=False))
+    ext = pd.DataFrame(extremos)
+    guardar(ext.round(3), '01b_extremos_del_limpio.csv')
+    print('\n  Los 3 días con el valor más alto y con el más bajo de cada variable en el limpio (para revisarlos en')
+    print('  Power BI: si alguno no tiene explicación en la operación, es un error que se escapó):')
+    for v, g in ext.groupby('variable', sort=False) if len(ext) else []:
+        alto = ', '.join(f'{r.valor:.1f} ({r.dia})' for r in g[g.extremo == 'máximo'].itertuples())
+        bajo = ', '.join(f'{r.valor:.1f} ({r.dia})' for r in g[g.extremo == 'mínimo'].itertuples())
+        print(f'  {v:<4} más altos: {alto}  |  más bajos: {bajo}')
 else:
     print(f'\n3. Sin {os.path.basename(ARCHIVO_LIMPIO)}: se omite la revisión del limpio actual.')
 
@@ -391,5 +441,5 @@ fig.suptitle(f'{EQUIPO}: cada variable día a día (rojo discontinuo: límite f�
 fig.tight_layout(rect=(0, 0, 1, 0.98))
 fig.savefig(f'{RUTA_EQ}/01b_revision.png', dpi=110)
 plt.close(fig)
-print('\nGuardados: 01b_resumen_variables, 01b_periodos_sugeridos, 01b_dias_sospechosos, 01b_limpio_actual, '
-      '01b_series_horarias (csv) y 01b_revision.png')
+print('\nGuardados: 01b_resumen_variables, 01b_periodos_sugeridos, 01b_dias_sospechosos, 01b_matriz_limpieza, '
+      '01b_limpio_actual, 01b_extremos_del_limpio, 01b_series_horarias (csv) y 01b_revision.png')
