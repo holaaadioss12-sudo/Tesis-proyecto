@@ -424,6 +424,13 @@ VARS_NO_NEGATIVAS = ['PI', 'T9', 'T5', 'V1', 'V2', 'V3', 'V4', 'PEL', 'PDF']
 VARS_INTERPOLABLES = ['T7', 'T8', 'T9', 'T1', 'T2', 'T5', 'PDF', 'PEL', 'PI', 'V1', 'V2', 'V3', 'V4']
 LIMITES_INTERPOLACION = {'PI': 30}
 
+# El limpio guarda solo las 14 variables del modelo, todas revisadas con limpieza_config.py. Una
+# columna que el modelo no usa (como RUN, o las dos de más que trae el crudo de CR009) no pasa por la
+# limpieza, y un hueco suyo no debe botar filas en el dropna() de la etapa 2.
+_otras = [c for c in df_limpio1.columns if c not in VARIABLES_A_FILTRAR]
+if _otras:
+    print(f'Columnas que el modelo no usa (no se limpian ni se guardan en el limpio): {_otras}')
+    df_limpio1 = df_limpio1.drop(columns=_otras)
 df_limpio = limpieza_etapa2(df_limpio1, VARS_NO_NEGATIVAS, VARS_INTERPOLABLES, LIMITES_INTERPOLACION)
 print(f'\nFilas después de la etapa 2: {len(df_limpio):,}')
 
