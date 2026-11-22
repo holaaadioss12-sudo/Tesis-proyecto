@@ -10,12 +10,14 @@ contra los errores de medición, y recién después el filtro estadístico de N_
   2. Sensor pegado: exactamente el mismo valor durante PEGADO_HORAS o más.
   3. Picos aislados: la lectura que "se dispara" y vuelve en 30 s o menos, y que pasa como
      alarma sin serlo (la presión que mencionó el profesor). Solo temperaturas y presiones.
+     3b. Saltos imposibles: una temperatura que cambia más de 10 °C en un minuto, aunque dure más
+     de 30 s (T8 de CR009 el 18 de noviembre de 2022: de 64 a 95 °C y de vuelta, minuto a minuto).
   4. Consistencia física: el metal no puede quedar más frío que el aceite que lo enfría (T8 de
      CR009 en enero de 2023).
   5. Arranques: los primeros minutos después de cada partida, mientras se estabilizan el motor
      y la bomba de aceite.
   6. Períodos malos: los que se decidan a mano al revisar el paso 01b.
-Lo anulado por 1 a 4 y 6 queda como hueco: si es corto (picos), el paso 01 lo interpola; si es
+Lo anulado por 1 a 4 (con 3b) y 6 queda como hueco: si es corto (picos), el paso 01 lo interpola; si es
 largo, se botan esas filas, porque el autoencoder necesita las 14 variables. Si se cambia algo
 aquí, hay que volver a correr el paso 01 y todo lo que viene después.
 """
@@ -60,6 +62,18 @@ PEGADO_HORAS = 6.0
 PICOS = {'variables': ['PDF', 'PEL', 'T7', 'T8', 'T9', 'T1', 'T2', 'T5'], 'ventana': '5min', 'k': 6.0,
          'max_registros': 3,
          'minimo': {'PDF': 20.0, 'PEL': 20.0, 'T7': 2.0, 'T8': 2.0, 'T9': 2.0, 'T1': 2.0, 'T2': 2.0, 'T5': 2.0}}
+
+# --- 3b. saltos imposibles: una temperatura no cambia 10 °C en un minuto ------------------------
+# El metal y el aceite tienen inercia térmica: con el chancador andando, una temperatura cambia
+# décimas de grado por minuto. Si en un minuto se mueve más de 'max_c_min' °C (lo más alto menos
+# lo más bajo de ese minuto), el que falla es el sensor, aunque el salto dure más de 30 s y el
+# criterio 3 no lo vea. Pasó con T8 de CR009 el 18 de noviembre de 2022: durante 12 minutos osciló
+# entre 64 y 95 °C de un minuto a otro, con el aceite de entrada (T2) y de retorno (T1) estables,
+# y después de la detención marcaba 36 °C. Se anula esa variable desde un minuto antes del primer
+# salto hasta 'margen_min' minutos después del último; saltos separados por menos de 'union_min'
+# minutos son un mismo episodio. Los minutos de arranque no se miran: los corta el criterio 5.
+SALTOS = {'variables': ['T7', 'T8', 'T9', 'T1', 'T2', 'T5'], 'max_c_min': 10.0, 'union_min': 5.0,
+          'margen_min': 1.0}
 
 # --- 4. consistencia física: el metal no puede estar más frío que el aceite que lo enfría ------
 # El aceite entra al chancador (T2) y enfría el metal: el buje excéntrico (T7), el socket liner
@@ -147,6 +161,47 @@ def picos_aislados(df, cfg=None):
     return out
 
 
+def saltos_imposibles(df, cfg=None, excluir=None):
+    """Tramos en que una temperatura cambia más rápido de lo físicamente posible.
+    Devuelve ({variable: máscara}, tabla de episodios: variable, desde, hasta, minutos, salto_max)."""
+    cfg = SALTOS if cfg is None else cfg
+    columnas = ['variable', 'desde', 'hasta', 'minutos', 'salto_max']
+    out, episodios = {}, []
+    if not cfg or len(df) == 0:
+        return out, pd.DataFrame(columns=columnas)
+    fuera = np.zeros(len(df), dtype=bool) if excluir is None else np.asarray(excluir, dtype=bool)
+    orden = None
+    if not df.index.is_monotonic_increasing:          # la ventana de 60 s necesita el tiempo ordenado
+        orden = np.argsort(df.index.asi8, kind='stable')
+        df, fuera = df.iloc[orden], fuera[orden]
+    t = df.index
+    antes = pd.Timedelta(minutes=1 + cfg['margen_min'])
+    despues = pd.Timedelta(minutes=cfg['margen_min'])
+    for v in cfg['variables']:
+        if v not in df.columns:
+            continue
+        x = df[v].where(~fuera)
+        rango = (x.rolling('60s').max() - x.rolling('60s').min()).to_numpy()
+        salto = np.nan_to_num(rango, nan=0.0) > cfg['max_c_min']
+        mascara = np.zeros(len(df), dtype=bool)
+        idx = np.flatnonzero(salto)
+        if len(idx):
+            ts = t[idx]
+            nuevo = np.r_[True, np.diff(ts.asi8) > cfg['union_min'] * 60e9]
+            for g in np.split(np.arange(len(idx)), np.flatnonzero(nuevo)[1:]):
+                a, b = ts[g[0]] - antes, ts[g[-1]] + despues
+                mascara[t.searchsorted(a, 'left'):t.searchsorted(b, 'right')] = True
+                episodios.append({'variable': v, 'desde': a, 'hasta': b,
+                                  'minutos': (b - a).total_seconds() / 60,
+                                  'salto_max': float(np.nanmax(rango[idx[g]]))})
+        out[v] = mascara & ~fuera
+    if orden is not None:                              # de vuelta al orden original de las filas
+        inversa = np.empty_like(orden)
+        inversa[orden] = np.arange(len(orden))
+        out = {v: m[inversa] for v, m in out.items()}
+    return out, pd.DataFrame(episodios, columns=columnas)
+
+
 def tras_arranque(df, minutos=None, hueco_s=None):
     """Máscara de los registros de los primeros 'minutos' después de cada partida."""
     minutos = ARRANQUE_MIN if minutos is None else minutos
@@ -160,14 +215,16 @@ def tras_arranque(df, minutos=None, hueco_s=None):
 
 
 def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None, picos=None,
-                    pegado_horas=None, arranque_min=None):
-    """Aplica los seis criterios en orden. Devuelve el df corregido y una tabla con lo anulado
-    (criterio, variable, anulados, % del registro y detalle); los días de la regla de consistencia
-    quedan en tabla.attrs['dias_inconsistentes']."""
+                    pegado_horas=None, arranque_min=None, saltos=None):
+    """Aplica los seis criterios en orden (el 3b va junto al 3). Devuelve el df corregido y una tabla
+    con lo anulado (criterio, variable, anulados, % del registro y detalle); los días de la regla de
+    consistencia quedan en tabla.attrs['dias_inconsistentes'] y los episodios del 3b en
+    tabla.attrs['saltos']."""
     limites = LIMITES_FISICOS if limites is None else limites
     periodos = PERIODOS_MALOS if periodos is None else periodos
     cfg_c = CONSISTENCIA if consistencia is None else consistencia
     cfg_p = PICOS if picos is None else picos
+    cfg_s = SALTOS if saltos is None else saltos
     horas = PEGADO_HORAS if pegado_horas is None else pegado_horas
     df = df.copy()
     filas = []
@@ -189,6 +246,17 @@ def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None, 
         for v, m in picos_aislados(df, cfg_p).items():
             anular('3. pico aislado', v, m, f'se aleja más de {cfg_p["k"]:g} desviaciones de la mediana de 5 min '
                                             f'y vuelve en {10 * cfg_p["max_registros"]} s o menos')
+    arr = tras_arranque(df, arranque_min)
+    episodios = pd.DataFrame(columns=['variable', 'desde', 'hasta', 'minutos', 'salto_max'])
+    if cfg_s:
+        mascaras, episodios = saltos_imposibles(df, cfg_s, excluir=arr)
+        for v, m in mascaras.items():
+            e = episodios[episodios.variable == v]
+            if len(e):
+                largo = e.loc[e.minutos.idxmax()]
+                anular('3b. salto imposible', v, m,
+                       f'cambia más de {cfg_s["max_c_min"]:g} °C en un minuto: {len(e)} episodio(s), el más largo de '
+                       f'{largo.minutos:.0f} min desde {largo.desde:%Y-%m-%d %H:%M} (salto de {largo.salto_max:.0f} °C)')
     malos = dias_inconsistentes(df, cfg_c)
     if len(malos):
         dia = df.index.normalize()
@@ -196,7 +264,6 @@ def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None, 
             anular('4. consistencia física', v, dia.isin(g.dia),
                    f'{len(g)} días entre {g.dia.min().date()} y {g.dia.max().date()}: más de {cfg_c["margen"]:g} °C '
                    f'bajo el aceite de entrada ({cfg_c["referencia"]}) y corrida de su nivel')
-    arr = tras_arranque(df, arranque_min)
     if arr.any():
         n_part = int((pd.Series(arr).astype(int).diff() == 1).sum() + int(arr[0]))
         for v in [c for c in VARIABLES if c in df.columns]:
@@ -208,6 +275,7 @@ def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None, 
                    f'{desde} a {hasta}: {motivo}')
     tabla = pd.DataFrame(filas, columns=['criterio', 'variable', 'anulados', 'pct_del_registro', 'detalle'])
     tabla.attrs['dias_inconsistentes'] = malos
+    tabla.attrs['saltos'] = episodios
     return df, tabla
 
 

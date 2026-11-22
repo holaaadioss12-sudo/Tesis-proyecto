@@ -382,17 +382,30 @@ epoca_inicial, terminado = 1, False
 
 # si una corrida anterior se cortó, se retoma desde la última época guardada. La huella de los datos
 # (cuántas ventanas hay y la media de cada variable en entrenamiento) evita retomar o reutilizar un
-# entrenamiento hecho con otros datos: si cambia la limpieza o el corte, se entrena de cero.
+# entrenamiento hecho con otros datos: si cambia la limpieza o el corte, se entrena de cero. Prueba no
+# cuenta: no se usa para entrenar ni para elegir la época, así que si la limpieza solo cambia ventanas de
+# prueba, el entrenamiento guardado sigue sirviendo y no hace falta GPU.
 _huella = {'ventanas': [int(len(X_train_normal)), int(len(X_val_normal)), int(len(X_val)), int(len(X_test))],
            'media': [round(float(v), 4) if np.isfinite(v) else None for v in params_norm['media'].to_numpy()]}
 _config_actual = {'tipo': TIPO_AE, 'latent_dim': LATENT_DIM, 'datos': _huella}
+
+
+def _mismos_datos_de_entrenamiento(guardada, actual):
+    """Las ventanas de entrenamiento y de validación y la normalización (no las de prueba)."""
+    return (isinstance(guardada, dict) and guardada.get('media') == actual['media']
+            and list(guardada.get('ventanas', []))[:3] == actual['ventanas'][:3])
+
+
 if _os.path.exists(RUTA_ESTADO) and not REENTRENAR:
     _est = torch.load(RUTA_ESTADO, map_location=device, weights_only=False)
     _cfg = _est.get('config', {})
     _misma_red = _cfg.get('tipo') == TIPO_AE and _cfg.get('latent_dim') == LATENT_DIM
-    if _misma_red and _cfg.get('datos') != _huella:
+    if _misma_red and not _mismos_datos_de_entrenamiento(_cfg.get('datos'), _huella):
         print('\nHay un entrenamiento guardado con otros datos (otra limpieza o corte): se empieza de cero.')
-    elif _cfg == _config_actual:
+    elif _misma_red:
+        if _cfg.get('datos') != _huella:
+            print('\nSolo cambiaron ventanas de prueba, que no se usan para entrenar ni para elegir la época: '
+                  'el entrenamiento guardado sirve.')
         modelo.load_state_dict(_est['modelo'])
         optimizador.load_state_dict(_est['optimizador'])
         mejor_val, mejor_separacion = _est['mejor_val'], _est['mejor_separacion']
