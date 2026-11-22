@@ -113,11 +113,16 @@ PICOS = {'variables': ['PI', 'PDF', 'PEL', 'T7', 'T8', 'T9', 'T1', 'T2', 'T5', '
 # otro, con el aceite de entrada (T2) y de retorno (T1) estables, y después de la detención marcaba
 # 36 °C. También con T8 de CR011 el 4 y 5 de noviembre de 2021 (saltos a 80 y 93 °C durante horas,
 # con las otras temperaturas quietas) y con T9 de CR011 (caídas a 6 °C y saltos a 227 °C). Se anula
-# esa variable desde un minuto antes del primer salto hasta 'margen_min' minutos después del
-# último; saltos separados por menos de 'union_min' minutos son un mismo episodio. Los minutos de
-# arranque no se miran: los corta el criterio 5.
+# esa variable desde 'margen_min' minutos antes del minuto del primer salto hasta 'margen_min'
+# minutos después del último: antes de un salto la lectura suele irse de a poco (el 15 de julio
+# de 2022, T8 de CR009 ya marcaba 52 °C un par de minutos antes del salto que se detectó). Saltos
+# separados por menos de 'union_min' minutos son un mismo episodio. Y si una variable salta
+# 'dia_completo' veces o más en un mismo día, el sensor estaba fallando y no es confiable entre un
+# salto y otro: se anula el día completo (T8 de CR009 el 25 de diciembre de 2022, con 4 saltos y
+# lecturas de 54 y 27 °C entre ellos, la víspera de los 41 días bajo el aceite; T8 de CR011 del 4 al
+# 6 de noviembre de 2021, con 35 saltos). Los minutos de arranque no se miran: los corta el 5.
 SALTOS = {'variables': ['T7', 'T8', 'T9', 'T1', 'T2', 'T5'], 'max_c_min': 10.0, 'union_min': 5.0,
-          'margen_min': 1.0}
+          'margen_min': 3.0, 'dia_completo': 3}
 
 # --- 4. consistencia física: un sensor no puede contradecir a otro ligado por la física ------------
 # El aceite sale del estanque (T5), se enfría, entra al chancador (T2), enfría el metal (el buje
@@ -366,6 +371,15 @@ def aplicar_limites(df, equipo, limites=None, periodos=None, consistencia=None, 
                 anular('3b. salto imposible', v, m,
                        f'cambia más de {cfg_s["max_c_min"]:g} °C en un minuto: {len(e)} episodio(s), el más largo de '
                        f'{largo.minutos:.0f} min desde {largo.desde:%Y-%m-%d %H:%M} (salto de {largo.salto_max:.0f} °C)')
+        if cfg_s.get('dia_completo') and len(episodios):
+            dia = df.index.normalize()
+            inicio = episodios.desde + pd.Timedelta(minutes=1 + cfg_s['margen_min'])   # el minuto del primer salto
+            for v, n in episodios.assign(dia=inicio.dt.normalize()).groupby(['variable', 'dia']).size().groupby(level=0):
+                dias_malos = n[n >= cfg_s['dia_completo']].index.get_level_values('dia')
+                if len(dias_malos):
+                    anular('3b. salto imposible', v, dia.isin(dias_malos),
+                           f'{cfg_s["dia_completo"]} saltos o más en el día: el sensor estaba fallando y se anula el día '
+                           f'completo ({", ".join(str(d.date()) for d in dias_malos)})')
     malos = dias_inconsistentes(df, cfg_c)
     if len(malos):
         dia = df.index.normalize()

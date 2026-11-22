@@ -434,6 +434,36 @@ if _otras:
 df_limpio = limpieza_etapa2(df_limpio1, VARS_NO_NEGATIVAS, VARS_INTERPOLABLES, LIMITES_INTERPOLACION)
 print(f'\nFilas después de la etapa 2: {len(df_limpio):,}')
 
+# Revisión final: el limpio tiene que pasar los mismos criterios de limpieza_config.py. Al cortar unos
+# picos aparecen otros que antes quedaban tapados (cambian la mediana y la desviación de sus 5 minutos),
+# y al botar filas cambian los vecinos de los que quedan. Se repite la revisión sobre el resultado, se
+# anula lo marcado (lo corto se rellena, lo largo se bota) y se vuelve a revisar, hasta que no queda nada.
+_filas_finales = len(df_limpio)
+_revision = []
+for _vuelta in range(1, 6):
+    _marcas = {}
+    for _masc in (lc.picos_aislados(df_limpio), lc.sensores_pegados(df_limpio), lc.saltos_imposibles(df_limpio)[0]):
+        for _v, _m in _masc.items():
+            if _m.any():
+                _marcas[_v] = _marcas.get(_v, np.zeros(len(df_limpio), dtype=bool)) | _m
+    _n = sum(int(_m.sum()) for _m in _marcas.values())
+    print(f'Revisión final, vuelta {_vuelta}: {_n:,} valores marcados'
+          + (f' ({", ".join(f"{_v} {int(_m.sum()):,}" for _v, _m in _marcas.items())})' if _n else ': el limpio pasa todos los criterios'))
+    if not _n:
+        break
+    for _v, _m in _marcas.items():
+        df_limpio.loc[_m, _v] = np.nan
+        _revision.append({'criterio': '7. revisión final', 'variable': _v, 'anulados': int(_m.sum()),
+                          'pct_del_registro': 100 * int(_m.sum()) / _filas_finales,
+                          'detalle': f'vuelta {_vuelta}: pico, sensor pegado o salto que apareció al limpiar'})
+    df_limpio = limpieza_etapa2(df_limpio, [], VARS_INTERPOLABLES, LIMITES_INTERPOLACION)
+print(f'Filas después de la revisión final: {len(df_limpio):,}')
+if _revision:
+    _r = pd.DataFrame(_revision).groupby(['criterio', 'variable'], as_index=False, sort=False).agg(
+        anulados=('anulados', 'sum'), pct_del_registro=('pct_del_registro', 'sum'), detalle=('detalle', 'first'))
+    _anulados = pd.concat([_anulados, _r], ignore_index=True) if len(_anulados) else _r
+    _anulados.to_csv(f'{RUTA_EQ}/01_limites_aplicados.csv', sep=';', decimal=',', index=False, encoding='utf-8-sig')
+
 
 # =============================================================================
 # DIAGNÓSTICO DE A3: LA REGLA NO SE PUEDE ACTIVAR NUNCA
