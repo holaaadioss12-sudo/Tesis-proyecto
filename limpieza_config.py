@@ -164,7 +164,18 @@ HUECO_PARTIDA_S = 60
 # noviembre: casi todos son operación real (partidas en frío, días de poca carga, el filtro que
 # se tapa, las vibraciones subiendo juntas), y los errores que había en ellos ya los cortan los
 # criterios 1 a 4.
+# Lo que sí se corta a mano salió de revisar los extremos del limpio (01b_extremos_del_limpio.csv):
+# dos fallas de la instrumentación de CR009 en que varias temperaturas saltan juntas, justo al partir
+# el chancador, cuando el criterio 3b no mira (el aceite de entrada no puede pasar de 38 a 52 °C en
+# minutos, y menos junto con el retorno y el socket liner). Se anulan las seis temperaturas, porque
+# en una falla así no se sabe cuáles midieron bien.
+_TEMPERATURAS = ['T7', 'T8', 'T9', 'T1', 'T2', 'T5']
 PERIODOS_MALOS = [
+    *[('CR009', v, '2022-07-15 12:00:00', '2022-07-15 13:00:00',
+       'falla de la instrumentación: T1, T2 y T8 saltan juntas a 52 °C al partir') for v in _TEMPERATURAS],
+    *[('CR009', v, '2022-07-29 00:30:00', '2022-07-29 02:00:00',
+       'falla de la instrumentación: T2 y T8 saltan juntas a 50 °C al partir (esa noche CR010 también '
+       'tuvo un salto de T8)') for v in _TEMPERATURAS],
 ]
 
 
