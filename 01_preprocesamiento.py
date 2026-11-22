@@ -407,6 +407,11 @@ def limpieza_etapa2(df, vars_no_negativas=None, vars_interpolables=None, limites
         if col in df.columns:
             df.loc[df[col] < 0, col] = np.nan
 
+    # Un tramo continuo termina en cada hueco de más de HUECO_PARTIDA_S (una detención o datos que
+    # faltan). Se interpola solo dentro de un tramo: rellenar el último valor antes de una detención con
+    # el primero de después (horas más tarde) inventaría un dato que nunca existió.
+    _t = df.index.to_series()
+    tramo = (_t.diff().dt.total_seconds() > lc.HUECO_PARTIDA_S).cumsum().to_numpy()
     for col in vars_interpolables:
         if col in df.columns:
             limite = limites_interpolacion.get(col, 5)
@@ -414,8 +419,10 @@ def limpieza_etapa2(df, vars_no_negativas=None, vars_interpolables=None, limites
             # horas o días) interpolate(limit=...) igual inventaría sus primeros valores
             nulo = df[col].isna()
             largo = nulo.groupby((nulo != nulo.shift()).cumsum()).transform('sum')
+            tramo_valido = pd.Series(np.where(nulo, np.nan, tramo), index=df.index)
+            mismo_tramo = (tramo_valido.ffill().to_numpy() == tramo) & (tramo_valido.bfill().to_numpy() == tramo)
             relleno = df[col].interpolate(method='linear', limit_area='inside')
-            df[col] = df[col].where(~nulo | (largo > limite), relleno)
+            df[col] = df[col].where(~nulo | (largo > limite) | ~mismo_tramo, relleno)
 
     return df.dropna()
 
