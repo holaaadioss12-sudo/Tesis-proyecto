@@ -19,6 +19,12 @@ Para cada ventana que el autoencoder marca como anómala (error mayor que el umb
      que llega al 80 %. Lo que no se puede explicar queda como combinación no descrita en la
      tabla: un comportamiento nuevo, para que lo revise el experto.
   5. Contraste con las alarmas que sonaron en la misma ventana (acuerdo y azar).
+Lo pedido en la reunión del 23 de noviembre: (a) el paso de los dos histogramas al síntoma como un
+procedimiento que se pueda seguir a mano, el filtrado sucesivo que propuso el profesor (síntomas que
+tienen la 1.ª variable de la firma, de esos los que tienen la 2.ª, y así; gana la máxima coincidencia),
+comparado con el método del punto 4; (b) cuántas veces los dos histogramas marcan las mismas variables,
+y cuántas veces la firma cabe en varios síntomas a la vez o un síntoma aparece en firmas distintas
+(síntomas que se pisan en la tabla del experto, o síntomas nuevos).
 Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv y
           {EQUIPO}_features_W60.csv (paso 02); criticidad.py y reglas_engine.py
 Salida:   04i_tabla_sintomas.csv, 04i_ventanas.csv, 04i_ventanas_variables.csv, 04i_resumen.csv,
@@ -311,6 +317,49 @@ def diagnosticar(i):
     return 'no descrita en la tabla', elegidos, 100 * float(w[cubre].sum()), 0, resto, fuera
 
 
+def filtrado_sucesivo(i):
+    """El procedimiento que propuso el profesor el 23 de noviembre, para que se pueda seguir a mano.
+    Las variables de la firma van de mayor a menor ΔMSE. Se toman los síntomas que tienen la primera
+    (con su sentido); de esos, los que además tienen la segunda; luego la tercera, y así. Si ninguno de
+    los que quedan tiene una variable, esa variable no se usa en esta vuelta y se sigue con la siguiente.
+    Al final quedan los síntomas de máxima coincidencia: todos tienen las mismas variables de la firma.
+    Gana el más específico (menos variables propias) y, si empatan, el más crítico. Las variables que ese
+    síntoma no explica pasan a una segunda vuelta, y así hasta que no queda nada que un síntoma tenga.
+    Devuelve los síntomas en orden, el paso a paso en texto y cuántos síntomas empataron en la 1.ª vuelta."""
+    idx = [j for j in np.argsort(-PDEL[i]) if FIRMA[i, j]]
+    if not idx or len(idx) > MAX_FIRMA:
+        return [], '', 0
+    def tiene(s, v, se):
+        return v in s['vars'] and (not se or (v, se) in s['pares'])
+
+    firma = [(VARIABLES[j], SENTIDO[i, j]) for j in idx]
+    pendientes = [p for p in firma if any(tiene(s, *p) for s in SINTOMAS)]
+    fuera = [p for p in firma if p not in pendientes]        # ningún síntoma de la tabla la tiene
+
+    elegidos, vueltas, empatados = [], [], 0
+    while pendientes:
+        cand, usadas, pasos = None, [], []
+        for v, se in pendientes:
+            base = SINTOMAS if cand is None else cand
+            nuevos = [s for s in base if tiene(s, v, se)]
+            if nuevos:
+                cand, usadas = nuevos, usadas + [(v, se)]
+                pasos.append(f'{texto_firma([(v, se)])}: {len(nuevos)}')
+            elif cand is not None:
+                pasos.append(f'{texto_firma([(v, se)])}: 0')
+        if cand is None:                                 # ninguna variable que quede está en la tabla
+            break
+        gana = min(cand, key=lambda s: (len(s['vars']), s['criticidad']))
+        if not elegidos:
+            empatados = sum(len(s['vars']) == len(gana['vars']) for s in cand)
+        elegidos.append(gana['id'])
+        vueltas.append(f'{len(vueltas) + 1}) ' + ' → '.join(pasos) + f' ⇒ {gana["id"]}')
+        pendientes = [p for p in pendientes if p not in usadas]
+    if fuera:
+        vueltas.append(f'fuera de la tabla: {texto_firma(fuera)}')
+    return elegidos, ' | '.join(vueltas), empatados
+
+
 print('\n' + '=' * 72)
 print(f'3-4. FIRMA DE PARETO ({100 * PARETO:.0f} %) Y SÍNTOMA DE LA TABLA, VENTANA POR VENTANA')
 print('=' * 72)
@@ -323,6 +372,9 @@ for i in np.flatnonzero(marcada):
     comps_al = {COMP_S[t] for t in s_al}
     principal = elegidos[0] if elegidos else ''
     con_alarma = bool(anomala[i])
+    filtro, pasos_f, empatados = filtrado_sucesivo(i)
+    principal_f = filtro[0] if filtro else ''
+    n_mayor = max(int(EN_MSE[i].sum()), int(EN_DEL[i].sum()))
     filas.append({
         'tramo_id': m.tramo_id.iat[i], 'ventana_id': m.ventana_id.iat[i], 'conjunto': conj[i],
         'timestamp_inicio': m.timestamp_inicio.iat[i], 'mes': mes[i], 'error': ERR[i], 'veces_umbral': ERR[i] / umbral,
@@ -340,7 +392,17 @@ for i in np.flatnonzero(marcada):
         'acuerdo_alguno': bool(set(elegidos) & s_al) if con_alarma else np.nan,
         'acuerdo_estricto': (principal == s_crit and principal != '') if con_alarma else np.nan,
         'acuerdo_componente': (COMP_S.get(principal) in comps_al) if con_alarma else np.nan,
-        '_principal': principal, '_s_al': s_al, '_s_crit': s_crit})
+        # los dos histogramas: ¿marcan las mismas variables?
+        'paretos_identicos': bool(N_FIRMA[i] > 0 and EN_MSE[i].sum() == N_FIRMA[i] == EN_DEL[i].sum()),
+        'coincidencia_paretos_pct': 100 * N_FIRMA[i] / n_mayor if n_mayor else 0.0,
+        # el filtrado sucesivo del profesor, paso a paso
+        'sintoma_principal_filtrado': ETIQ.get(principal_f, ''),
+        'sintomas_filtrado': ' + '.join(ETIQ[t] for t in filtro), 'pasos_filtrado': pasos_f,
+        'n_sintomas_empatados': empatados,
+        'filtrado_igual_principal': bool(principal_f == principal) if principal or principal_f else np.nan,
+        'acuerdo_principal_filtrado': (principal_f in s_al) if con_alarma else np.nan,
+        '_principal': principal, '_principal_f': principal_f, '_elegidos': elegidos,
+        '_s_al': s_al, '_s_crit': s_crit})
     for j, v in enumerate(VARIABLES):
         filas_v.append({'tramo_id': m.tramo_id.iat[i], 'ventana_id': m.ventana_id.iat[i], 'conjunto': conj[i],
                         'variable': v, 'pct_mse': PMSE[i, j], 'pct_delta': PDEL[i, j],
@@ -358,9 +420,9 @@ guardar(pd.DataFrame(filas_v).round(4), '04i_ventanas_variables.csv')
 # =============================================================================
 # 5. RESUMEN, SÍNTOMAS CONTRA ALARMAS Y COMBINACIONES PARA EL EXPERTO
 # =============================================================================
-def azar_principal(t):
+def azar_principal(t, col='_principal'):
     """Acuerdo esperado si los síntomas del modelo se repartieran al azar entre las ventanas."""
-    q = t._principal.value_counts(normalize=True)
+    q = t[col].value_counts(normalize=True)
     p_en = {s: np.mean([s in a for a in t._s_al]) for s in q.index if s}
     p_crit = t._s_crit.value_counts(normalize=True)
     return (100 * sum(q[s] * p_en.get(s, 0) for s in q.index if s),
@@ -377,23 +439,39 @@ for cj in ['val', 'test']:
             **{f'pct_{c.replace(" ", "_")}': 100 * (t.categoria == c).mean() for c in CATEGORIAS},
             'mediana_n_pareto_mse': t.n_pareto_mse.median(), 'mediana_n_pareto_delta': t.n_pareto_delta.median(),
             'mediana_n_firma': t[t.n_firma > 0].n_firma.median(),
-            'pct_firma_hasta_3_variables': 100 * t.n_firma.between(1, 3).mean()}
+            'pct_firma_hasta_3_variables': 100 * t.n_firma.between(1, 3).mean(),
+            # simultaneidad de los dos histogramas y de los síntomas
+            'pct_paretos_identicos': 100 * t.paretos_identicos.mean(),
+            'coincidencia_paretos_media_pct': t.coincidencia_paretos_pct.mean(),
+            'pct_firma_en_un_sintoma': 100 * (t.n_sintomas_que_la_contienen == 1).mean(),
+            'pct_firma_en_varios_sintomas_a_la_vez': 100 * (t.n_sintomas_que_la_contienen >= 2).mean(),
+            'pct_necesita_varios_sintomas': 100 * (t.n_sintomas >= 2).mean(),
+            # filtrado sucesivo contra el método del paso 04i
+            'pct_filtrado_igual_principal': 100 * t.filtrado_igual_principal.dropna().astype(float).mean(),
+            'pct_filtrado_con_empate': 100 * (t.n_sintomas_empatados >= 2).mean()}
     if len(ta):
         az_p, az_e = azar_principal(ta)
+        az_f, _ = azar_principal(ta, '_principal_f')
         fila.update({'acuerdo_principal_pct': 100 * ta.acuerdo_principal.astype(float).mean(),
                      'azar_principal_pct': az_p, 'acuerdo_alguno_pct': 100 * ta.acuerdo_alguno.astype(float).mean(),
                      'acuerdo_estricto_pct': 100 * ta.acuerdo_estricto.astype(float).mean(), 'azar_estricto_pct': az_e,
-                     'acuerdo_componente_pct': 100 * ta.acuerdo_componente.astype(float).mean()})
+                     'acuerdo_componente_pct': 100 * ta.acuerdo_componente.astype(float).mean(),
+                     'acuerdo_principal_filtrado_pct': 100 * ta.acuerdo_principal_filtrado.astype(float).mean(),
+                     'azar_principal_filtrado_pct': az_f})
     res.append(fila)
     for s in SINTOMAS:
         en_mod = ta._principal == s['id']
+        con_s = t[[s['id'] in e for e in t._elegidos]]
         sint.append({'conjunto': cj, 'sintoma': s['id'], 'etiqueta': s['etiqueta'], 'componente': s['componente'],
                      'modelo_pct': 100 * (t._principal == s['id']).mean(),
                      'modelo_con_alarma_pct': 100 * en_mod.mean() if len(ta) else np.nan,
                      'alarma_critica_pct': 100 * (ta._s_crit == s['id']).mean() if len(ta) else np.nan,
                      'alarma_presente_pct': 100 * np.mean([s['id'] in a for a in ta._s_al]) if len(ta) else np.nan,
                      'coincide_cuando_lo_dice_el_modelo_pct':
-                         100 * np.mean([s['id'] in a for a in ta.loc[en_mod, '_s_al']]) if en_mod.any() else np.nan})
+                         100 * np.mean([s['id'] in a for a in ta.loc[en_mod, '_s_al']]) if en_mod.any() else np.nan,
+                     # el mismo síntoma aparece en firmas distintas y junto a otros síntomas
+                     'ventanas_con_el_sintoma': len(con_s), 'firmas_distintas': con_s.firma.nunique(),
+                     'junto_a_otros_sintomas_pct': 100 * (con_s.n_sintomas >= 2).mean() if len(con_s) else np.nan})
     for (firma, cat), g in t[t.categoria != 'difusa'].groupby(['firma', 'categoria']):
         reglas = pd.Series([r for r in ', '.join(g.reglas_activas).split(', ') if r], dtype=object)
         comb.append({'conjunto': cj, 'firma': firma, 'categoria': cat, 'ventanas': len(g),
@@ -424,6 +502,16 @@ for f in res.itertuples():
         print(f'  Con las alarmas: el síntoma del modelo es uno de los de las alarmas en {f.acuerdo_principal_pct:.0f} % '
               f'(azar {f.azar_principal_pct:.0f} %); es el de la alarma más crítica en {f.acuerdo_estricto_pct:.0f} % '
               f'(azar {f.azar_estricto_pct:.0f} %); mismo componente en {f.acuerdo_componente_pct:.0f} %')
+    print(f'  Los dos histogramas: marcan exactamente las mismas variables en {f.pct_paretos_identicos:.0f} % de las '
+          f'ventanas; en promedio comparten el {f.coincidencia_paretos_media_pct:.0f} % de sus variables')
+    print(f'  La firma cabe en un solo síntoma en {f.pct_firma_en_un_sintoma:.1f} %, en varios a la vez en '
+          f'{f.pct_firma_en_varios_sintomas_a_la_vez:.1f} %; necesita dos o más síntomas en '
+          f'{f.pct_necesita_varios_sintomas:.0f} %')
+    print(f'  Filtrado sucesivo: elige el mismo síntoma principal en {f.pct_filtrado_igual_principal:.0f} %; '
+          f'queda con empate en {f.pct_filtrado_con_empate:.0f} %'
+          + (f'; acuerdo con las alarmas {f.acuerdo_principal_filtrado_pct:.0f} % '
+             f'(azar {f.azar_principal_filtrado_pct:.0f} %)'
+             if hasattr(f, 'acuerdo_principal_filtrado_pct') and pd.notna(f.acuerdo_principal_filtrado_pct) else ''))
 for cj in ['val', 'test']:
     c = comb[(comb.conjunto == cj) & comb.categoria.isin(['combinación de síntomas', 'no descrita en la tabla'])]
     if len(c):
