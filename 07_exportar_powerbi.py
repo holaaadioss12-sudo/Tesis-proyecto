@@ -72,7 +72,7 @@ eleccion_k, atribucion, metricas, consistencia, agr_det, escalas = [], [], [], [
 eleccion_k_res, val_ind, val_dist, val_acu, val_conf, val_des, val_fir = [], [], [], [], [], [], []
 pca_barr, pca_cargas, pca_det, pca_comp, pca_loc, pca_delta = [], [], [], [], [], []
 inicios_tipo, prec_contexto = [], []
-diag_tabla, diag_ven, diag_var, diag_res, diag_sint, diag_comb = [], [], [], [], [], []
+diag_tabla, diag_ven, diag_var, diag_res, diag_sint, diag_comb, diag_pares = [], [], [], [], [], [], []
 rev_res, rev_per, rev_series, rev_limpio, lim_apl = [], [], [], [], []
 
 for eq in EQUIPOS:
@@ -220,6 +220,7 @@ for eq in EQUIPOS:
                            (prec_contexto, '06_precursores_contexto.csv'),
                            (diag_tabla, '04i_tabla_sintomas.csv'), (diag_res, '04i_resumen.csv'),
                            (diag_sint, '04i_sintomas.csv'), (diag_comb, '04i_combinaciones.csv'),
+                           (diag_pares, '04i_pares_sintomas.csv'),
                            (rev_res, '01b_resumen_variables.csv'), (rev_per, '01b_periodos_sugeridos.csv'),
                            (rev_series, '01b_series_horarias.csv'), (rev_limpio, '01b_limpio_actual.csv'),
                            (lim_apl, '01_limites_aplicados.csv')]:
@@ -273,6 +274,7 @@ for lista, nombre in [(ventanas, 'pbi_ventanas.csv'), (por_variable, 'pbi_error_
                       (diag_tabla, 'pbi_tabla_sintomas.csv'), (diag_ven, 'pbi_diagnostico_ventanas.csv'),
                       (diag_var, 'pbi_diagnostico_variables.csv'), (diag_res, 'pbi_diagnostico_resumen.csv'),
                       (diag_sint, 'pbi_diagnostico_sintomas.csv'), (diag_comb, 'pbi_diagnostico_combinaciones.csv'),
+                      (diag_pares, 'pbi_pares_sintomas.csv'),
                       (rev_res, 'pbi_revision_variables.csv'), (rev_per, 'pbi_revision_periodos.csv'),
                       (rev_series, 'pbi_series_variables.csv'), (rev_limpio, 'pbi_revision_limpio.csv'),
                       (lim_apl, 'pbi_limites_aplicados.csv')]:

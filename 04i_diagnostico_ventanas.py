@@ -28,9 +28,11 @@ y cuántas veces la firma cabe en varios síntomas a la vez o un síntoma aparec
 Entrada:  {EQUIPO}_error_reconstruccion_W60.csv (paso 04), {EQUIPO}_ventanas_W60.csv y
           {EQUIPO}_features_W60.csv (paso 02); criticidad.py y reglas_engine.py
 Salida:   04i_tabla_sintomas.csv, 04i_ventanas.csv, 04i_ventanas_variables.csv, 04i_resumen.csv,
-          04i_sintomas.csv, 04i_combinaciones.csv, 04i_ejemplos.png, 04i_diagnostico.png
+          04i_sintomas.csv, 04i_combinaciones.csv, 04i_pares_sintomas.csv, 04i_ejemplos.png,
+          04i_diagnostico.png
 Lo normal y los umbrales se fijan en validación; prueba solo se informa.
 """
+import itertools
 import os
 import re
 import sys
@@ -486,9 +488,42 @@ comb = (pd.DataFrame(comb).sort_values(['conjunto', 'ventanas'], ascending=[Fals
         pd.DataFrame(columns=['conjunto', 'firma', 'categoria', 'ventanas', 'pct_marcadas', 'sintomas',
                               'variables_fuera_de_la_tabla', 'meses', 'primera', 'pct_con_alarma',
                               'reglas_mas_frecuentes']))
+
+
+def nombre_corto(t):
+    """'Fijacion suelta / Desbalance estructural / Eje descentrado (V1-V4↑)' -> 'Fijacion suelta (V1-V4↑)'."""
+    s = POR_ID_S[t]
+    return f"{s['falla'].split(' / ')[0]} ({s['variables']})"
+
+
+# pares de síntomas que aparecen juntos en una misma ventana: los que se pisan en la tabla del experto
+pares = []
+for cj in ['val', 'test']:
+    _t = d[d.conjunto == cj]
+    if _t.empty:
+        continue
+    _n_con = {s['id']: sum(s['id'] in e for e in _t._elegidos) for s in SINTOMAS}
+    _cuenta, _alarma = {}, {}
+    for _e, _ca in zip(_t._elegidos, _t.con_alarma):
+        for _ab in itertools.combinations(sorted(set(_e)), 2):
+            _cuenta[_ab] = _cuenta.get(_ab, 0) + 1
+            _alarma[_ab] = _alarma.get(_ab, 0) + int(_ca)
+    for (_a, _b), _nv in _cuenta.items():
+        pares.append({'conjunto': cj, 'sintoma_a': _a, 'sintoma_b': _b,
+                      'nombre_a': nombre_corto(_a), 'nombre_b': nombre_corto(_b),
+                      'par': f'{nombre_corto(_a)} + {nombre_corto(_b)}',
+                      'componentes': ' + '.join(dict.fromkeys([COMP_S[_a], COMP_S[_b]])),
+                      'ventanas': _nv, 'pct_marcadas': 100 * _nv / len(_t),
+                      'pct_de_las_con_a': 100 * _nv / _n_con[_a], 'pct_de_las_con_b': 100 * _nv / _n_con[_b],
+                      'pct_con_alarma': 100 * _alarma[(_a, _b)] / _nv})
+pares = (pd.DataFrame(pares).sort_values(['conjunto', 'ventanas'], ascending=[False, False]) if pares else
+         pd.DataFrame(columns=['conjunto', 'sintoma_a', 'sintoma_b', 'nombre_a', 'nombre_b', 'par', 'componentes',
+                               'ventanas', 'pct_marcadas', 'pct_de_las_con_a', 'pct_de_las_con_b', 'pct_con_alarma']))
+
 guardar(res.round(2), '04i_resumen.csv')
 guardar(sint.round(2), '04i_sintomas.csv')
 guardar(comb.round(2), '04i_combinaciones.csv')
+guardar(pares.round(2), '04i_pares_sintomas.csv')
 
 pd.set_option('display.width', 220)
 for f in res.itertuples():
@@ -595,4 +630,4 @@ fig.tight_layout()
 fig.savefig(f'{RUTA_EQ}/04i_diagnostico.png', dpi=150)
 plt.close(fig)
 print('\nGuardados: 04i_tabla_sintomas, 04i_ventanas, 04i_ventanas_variables, 04i_resumen, 04i_sintomas, '
-      '04i_combinaciones (csv), 04i_ejemplos y 04i_diagnostico (png).')
+      '04i_combinaciones, 04i_pares_sintomas (csv), 04i_ejemplos y 04i_diagnostico (png).')
